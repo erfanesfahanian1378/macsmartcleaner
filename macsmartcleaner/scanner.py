@@ -14,13 +14,12 @@ import fnmatch
 import glob
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .context import Context
 from .rules import Action, Rule
-from .sizes import Usage, measure
+from .sizes import Usage, measure_many
 from .ui import NULL, Reporter
 
 
@@ -87,22 +86,16 @@ def _expand(rule: Rule, ctx: Context, probes: Dict[str, object]) -> List[str]:
     return [r for r in roots if not os.path.islink(r)]
 
 
-def measure_all(paths: Iterable[str], reporter: Reporter, workers: int = 8) -> Dict[str, Usage]:
-    """Measure paths in parallel, feeding live counters and one step per finished path."""
+def measure_all(paths: Iterable[str], reporter: Reporter, workers: Optional[int] = None) -> Dict[str, Usage]:
+    """Measure paths in parallel worker processes, feeding live counters and one step per path."""
     def on_dir(d: str, files: int, nbytes: int) -> None:
         reporter.count(files, nbytes)
         reporter.current(d)
 
-    out: Dict[str, Usage] = {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {pool.submit(measure, p, on_dir): p for p in paths}
-        for fut in as_completed(futures):
-            out[futures[fut]] = fut.result()
-            reporter.step()
-    return out
+    return measure_many(list(paths), workers=workers, on_dir=on_dir, on_root_done=lambda _p: reporter.step())
 
 
-def scan(rules: Iterable[Rule], ctx: Context, reporter: Reporter = NULL, workers: int = 8) -> List[Finding]:
+def scan(rules: Iterable[Rule], ctx: Context, reporter: Reporter = NULL, workers: Optional[int] = None) -> List[Finding]:
     rules = list(rules)
 
     # ---- probes (tmutil, simctl, getconf) --------------------------------
@@ -211,9 +204,37 @@ def scan(rules: Iterable[Rule], ctx: Context, reporter: Reporter = NULL, workers
                 u = usages[root]
                 if not u.exists:
                     continue
+                if rule.action == Action.DELETE and rule.min_age_days and \
+                        ctx.days_since(u.newest_mtime) < rule.min_age_days:
+                    continue
                 targets = [Target(root, u)] if rule.action == Action.DELETE else []
-                findings.append(Finding(rule, root, u.bytes, u.files, u.newest_mtime, targets,
-                                        errors=u.errors))
+                f = Finding(rule, root, u.bytes, u.files, u.newest_mtime, targets, errors=u.errors)
+                if u.errors and not u.files and not ctx.is_root:
+                    # a root-only folder we couldn't look inside: don't show a misleading 0
+                    f.size_known = False
+                    f.note = "run with sudo to measure"
+                findings.append(f)
+
+    _subtract_nested(findings)
     findings.sort(key=lambda f: f.size, reverse=True)
     reporter.end(f"{len(jobs):,} places checked")
     return findings
+
+
+def _subtract_nested(findings: List[Finding]) -> None:
+    """When one finding deletes a folder that contains another finding (an app leftover
+    containing its sandbox cache), count the inner bytes only once - on the inner finding."""
+    outer = [f for f in findings if f.rule.action == Action.DELETE and f.root]
+    if not outer:
+        return
+    for o in outer:
+        prefix = _key(o.root) + os.sep  # type: ignore[arg-type]
+        inner = 0
+        for f in findings:
+            if f is o:
+                continue
+            for t in f.targets or ([Target(f.root, Usage(bytes=f.size))] if f.root else []):
+                if _key(t.path).startswith(prefix):
+                    inner += t.usage.bytes
+        if inner:
+            o.size = max(0, o.size - inner)

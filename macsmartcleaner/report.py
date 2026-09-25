@@ -25,6 +25,7 @@ def c(text: str, code: str) -> str:
 
 SAFETY_STYLE = {Safety.SAFE: "32", Safety.CAUTION: "33", Safety.REVIEW: "35"}
 VERDICT_STYLE = {"likely-junk": "32", "orphaned": "33", "stale": "33", "data": "35", "system": "36",
+                 "old": "33", "large": "35",
                  "unknown": "2"}
 
 
@@ -89,6 +90,13 @@ def print_report(ctx: Context, findings: Sequence[Finding], hogs: Sequence[Hog],
         if len(projects) > 25:
             w(c(f"  ... and {len(projects) - 25} more (see --json/--html)\n", "2"))
 
+    large = [h for h in hogs if h.verdict in ("large", "old")]
+    hogs = [h for h in hogs if h.verdict not in ("large", "old")]
+    if large:
+        w("\n" + c(f"Large files in your home folder  ({human(sum(h.usage.bytes for h in large))})", "1;4") + "\n")
+        for h in large[:20]:
+            w(f"  {human(h.usage.bytes):>9}  {c(f'{h.verdict:<6}', VERDICT_STYLE.get(h.verdict, '0'))} "
+              f"{h.display}  {c(h.reason, '2')}\n")
     if hogs:
         w("\n" + c("Other big folders no rule covers (review these yourself)", "1;4") + "\n")
         for h in hogs[:30]:

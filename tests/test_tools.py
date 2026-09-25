@@ -183,3 +183,74 @@ class TestOptimize(FakeMac):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestCoverage(FakeMac):
+    def app(self, name, bundle_id):
+        path = os.path.join(self.root, "Applications", name + ".app", "Contents", "Info.plist")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "wb") as fh:
+            plistlib.dump({"CFBundleIdentifier": bundle_id, "CFBundleName": name}, fh)
+
+    def test_app_leftovers(self):
+        for i, (n, b) in enumerate([("Slack", "com.tinyspeck.slackmacgap"), ("Docker", "com.docker.docker"),
+                                    ("A", "com.a.a"), ("B", "com.b.b"), ("C", "com.c.c")]):
+            self.app(n, b)
+        write(self.h("Library/Containers/com.gone.editor/Data/x.db"), 5000)          # leftover
+        write(self.h("Library/Containers/com.docker.helper/Data/x"), 5000)           # same vendor: keep
+        write(self.h("Library/Group Containers/ABCDE12345.com.gone.editor/x"), 5000)  # leftover (team prefix)
+        write(self.h("Library/Containers/com.apple.Notes/Data/x"), 5000)             # apple: keep
+        write(self.h("Library/Saved Application State/com.gone.editor.savedState/w"), 100)
+        write(self.h("Library/Application Support/Slack/data"), 100)                  # not an id: skip
+        by = self.findings_by_rule(scan(BUILTIN_RULES, self.ctx))
+        roots = sorted(os.path.relpath(f.root, self.h("Library")) for f in by["app-leftovers"])
+        self.assertEqual(roots, ["Containers/com.gone.editor", "Group Containers/ABCDE12345.com.gone.editor",
+                                 "Saved Application State/com.gone.editor.savedState"])
+        self.assertTrue(by["app-leftovers"][0].rule.trash)
+
+    def test_trash_rules_move_to_trash_and_min_age(self):
+        write(self.h("Downloads/old.dmg"), 5000, age_days=30)
+        write(self.h("Downloads/new.dmg"), 5000)
+        findings = scan([r for r in BUILTIN_RULES if r.id == "old-installers"], self.ctx)
+        self.assertEqual([os.path.basename(f.root) for f in findings], ["old.dmg"])
+        from macsmartcleaner import cleaner
+        cleaner.execute(findings, self.ctx, dry_run=False)
+        self.assertTrue(os.path.exists(self.h(".Trash/old.dmg")))
+        self.assertTrue(os.path.exists(self.h("Downloads/new.dmg")))
+
+    def test_root_only_folder_shows_unknown_size(self):
+        spot = os.path.join(self.root, "System/Volumes/Data/.Spotlight-V100")
+        write(os.path.join(spot, "Store-V2", "index"), 5000)
+        os.chmod(spot, 0o000)
+        try:
+            if os.access(spot, os.R_OK):  # running as root: permissions don't apply
+                self.skipTest("root can read everything")
+            by = self.findings_by_rule(scan([r for r in BUILTIN_RULES if r.id == "spotlight-index"], self.ctx))
+            f = by["spotlight-index"][0]
+            self.assertFalse(f.size_known)
+            self.assertIn("sudo", f.note)
+        finally:
+            os.chmod(spot, 0o755)
+
+    def test_large_files(self):
+        from macsmartcleaner import discover
+        write(self.h("Movies/big.mov"), 3_000_000, age_days=400)
+        write(self.h("Documents/medium.zip"), 2_000_000)
+        write(self.h("Library/Caches/huge.bin"), 3_000_000)        # Library: never here
+        write(self.h("Pictures/x.photoslibrary/originals/a.heic"), 3_000_000)  # inside a package
+        found = {os.path.basename(h.path): h for h in discover.find_large_files(self.ctx, min_size=1_000_000)}
+        self.assertEqual(set(found), {"big.mov", "medium.zip"})
+        self.assertEqual(found["big.mov"].verdict, "old")
+        self.assertEqual(found["medium.zip"].verdict, "large")
+
+    def test_leftover_inside_counts_once(self):
+        for n, b in [("A", "com.a.a"), ("B", "com.b.b"), ("C", "com.c.c"), ("D", "com.d.d"), ("E", "com.e.e")]:
+            self.app(n, b)
+        write(self.h("Library/Containers/com.gone.app/Data/Library/Caches/c.bin"), 400_000)
+        write(self.h("Library/Containers/com.gone.app/Data/x.db"), 100_000)
+        by = self.findings_by_rule(scan(BUILTIN_RULES, self.ctx))
+        inner = by["sandbox-caches"][0].size
+        outer = by["app-leftovers"][0].size
+        total = sum(f.size for f in by["sandbox-caches"] + by["app-leftovers"])
+        self.assertLess(outer, 400_000)  # the cache part is not double counted
+        self.assertLess(abs(total - (inner + outer)), 1)

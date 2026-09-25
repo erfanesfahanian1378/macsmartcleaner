@@ -17,6 +17,7 @@ Actions:
 from __future__ import annotations
 
 import enum
+import glob
 import json
 import os
 from dataclasses import dataclass, field
@@ -60,6 +61,7 @@ class Rule:
     min_age_days: int = 0
     needs_root: bool = False
     quit_apps: Tuple[str, ...] = ()
+    trash: bool = False  # move to the Trash instead of deleting (reversible)
     why: str = ""
     impact: str = ""
     probe: Optional[Callable[[Context], ProbeResult]] = field(default=None, compare=False, hash=False)
@@ -104,6 +106,37 @@ def _probe_darwin_user_cache(ctx: Context) -> ProbeResult:
     return ProbeResult(roots=[res.stdout.strip().rstrip("/")])
 
 
+LEFTOVER_PARENTS = ("~/Library/Containers", "~/Library/Group Containers", "~/Library/Application Scripts",
+                    "~/Library/Saved Application State", "~/Library/HTTPStorages", "~/Library/WebKit",
+                    "~/Library/Application Support")
+
+
+def _probe_leftovers(ctx: Context) -> ProbeResult:
+    """Library folders named after apps that are no longer installed."""
+    from .apps import belongs_to_installed, bundle_id_of, installed_apps, is_apple
+
+    ids, _names = installed_apps(ctx)
+    if len(ids) < 5:  # can't see /Applications (tests, odd setups): don't guess
+        return ProbeResult()
+    roots = []
+    for parent in LEFTOVER_PARENTS:
+        base = ctx.path(parent)
+        try:
+            names = os.listdir(base)
+        except OSError:
+            continue
+        for name in names:
+            bid = bundle_id_of(name)
+            if bid and not is_apple(bid) and not belongs_to_installed(bid, ids):
+                roots.append(os.path.join(base, name))
+    return ProbeResult(roots=roots, note=f"{len(roots)} folder(s) from apps that are no longer installed")
+
+
+def _probe_volume_trash(ctx: Context) -> ProbeResult:
+    roots = glob.glob(os.path.join(ctx.path("/Volumes"), "*", ".Trashes", str(os.getuid())))
+    return ProbeResult(roots=[r for r in roots if not os.path.islink(os.path.dirname(os.path.dirname(r)))])
+
+
 # --------------------------------------------------------------------------- catalog
 
 SYS = "System & backups"
@@ -123,6 +156,10 @@ ELECTRON_CACHE_DIRS = (
     "DawnWebGPUCache", "GrShaderCache", "ShaderCache", "Crashpad/completed",
 )
 
+# cache folders inside browser/Electron profiles (Chrome/Brave/Edge/Arc "Default", "Profile 1"...)
+PROFILE_CACHE_DIRS = ("Code Cache", "GPUCache", "Service Worker/CacheStorage", "Service Worker/ScriptCache",
+                      "DawnCache", "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache", "ShaderCache")
+
 BUILTIN_RULES: List[Rule] = [
     # ---------------------------------------------------------------- system
     R("tm-snapshots", "Time Machine local snapshots", SYS, C, CMD,
@@ -136,7 +173,7 @@ BUILTIN_RULES: List[Rule] = [
       why="Application logs, crash and diagnostic reports.",
       impact="None; apps create new logs as needed."),
     R("system-logs", "System logs & diagnostic reports", APPS, S, CON,
-      paths=("/Library/Logs/DiagnosticReports", "/private/var/log/DiagnosticMessages"),
+      paths=("/Library/Logs", "/private/var/log/DiagnosticMessages"),
       needs_root=True, why="System-wide crash and diagnostic reports.", impact="None."),
     R("system-caches", "System-wide caches", APPS, C, CON,
       paths=("/Library/Caches",), needs_root=True, min_age_days=3,
@@ -172,8 +209,8 @@ BUILTIN_RULES: List[Rule] = [
       impact="Rebuilt automatically. macOS may ask Terminal for permission to touch other apps' data."),
     R("electron-caches", "Electron/Chromium app caches (Slack, Discord, VS Code, Teams...)", APPS, C, CON,
       paths=tuple(f"~/Library/Application Support/*/{d}" for d in ELECTRON_CACHE_DIRS)
+      + tuple(f"~/Library/Application Support/*/{lvl}{d}" for lvl in ("*/", "*/*/") for d in PROFILE_CACHE_DIRS)
       + ("~/Library/Application Support/*/Service Worker/CacheStorage",
-         "~/Library/Application Support/*/*/Service Worker/CacheStorage",
          "~/Library/Application Support/*/Partitions/*/Cache",
          "~/Library/Application Support/*/Partitions/*/Service Worker/CacheStorage"),
       quit_apps=("Slack", "Discord", "Code", "Cursor", "Microsoft Teams", "Notion", "Figma", "Spotify"),
@@ -356,6 +393,100 @@ BUILTIN_RULES: List[Rule] = [
     R("steam-shadercache", "Steam shader cache", GAME, S, CON,
       paths=("~/Library/Application Support/Steam/steamapps/shadercache",),
       why="Pre-compiled shaders for games.", impact="Rebuilt when you launch the game."),
+    R("steam-caches", "Steam app & download caches", GAME, S, CON,
+      paths=("~/Library/Application Support/Steam/appcache", "~/Library/Application Support/Steam/depotcache",
+             "~/Library/Application Support/Steam/logs"),
+      quit_apps=("steam_osx",), why="Steam's store/library cache, partial download chunks and logs.",
+      impact="Rebuilt by Steam. Games are not touched."),
+
+    # ---------------------------------------------------------------- system level (sudo)
+    R("spotlight-index", "Spotlight index (.Spotlight-V100)", SYS, C, CMD,
+      paths=("/System/Volumes/Data/.Spotlight-V100",), commands=(("mdutil", "-E", "/"),),
+      command_needs_root=True, needs_root=False,
+      why="Spotlight's search index. It can bloat to tens of GB after big file moves or a corrupted index. "
+          "Never delete this folder by hand: that can break Spotlight and Mail search.",
+      impact="Erases and rebuilds the index (the right way). Spotlight search is incomplete and the Mac is "
+             "busy while it re-indexes, from minutes to hours."),
+    R("unified-logs", "System diagnostic logs (/var/db/diagnostics)", SYS, C, CMD,
+      paths=("/private/var/db/diagnostics",), commands=(("log", "erase", "--all"),), command_needs_root=True,
+      why="macOS unified logging store. Usually capped, but logging profiles or crashes can grow it to many GB.",
+      impact="Old system logs are gone (only matters when troubleshooting). macOS keeps logging normally."),
+    R("rotated-logs", "Old rotated system logs", APPS, S, DEL, needs_root=True,
+      paths=("/private/var/log/*.gz", "/private/var/log/*.bz2", "/private/var/log/*/*.gz",
+             "/private/var/log/*/*.bz2", "/private/var/log/asl/*.asl"),
+      why="Compressed, already-rotated system log archives.", impact="None."),
+    R("core-dumps", "Crash core dumps (/cores)", SYS, S, DEL, paths=("/cores/core.*",), needs_root=True,
+      why="Full memory dumps written when a process crashes with core dumps enabled. Often several GB each.",
+      impact="None, unless you were about to debug that crash."),
+    R("macos-install-leftovers", "Leftovers from macOS updates", SYS, C, DEL, needs_root=True,
+      paths=("/macOS Install Data", "/System/Volumes/Data/macOS Install Data"),
+      why="Staging folder left behind by an interrupted or finished macOS update (often 10+ GB).",
+      impact="If an update is waiting to install, it will download again."),
+    R("macos-installers", "Old 'Install macOS' apps", SYS, V, DEL, trash=True,
+      paths=("/Applications/Install macOS *.app",),
+      why="Full macOS installer apps (12-15 GB each), kept after upgrading or making a USB installer.",
+      impact="Moved to the Trash. Download it again from the App Store if you need to make a boot USB."),
+    R("document-versions", "Document version history (.DocumentRevisions-V100)", SYS, V, REP,
+      paths=("/System/Volumes/Data/.DocumentRevisions-V100",),
+      why="Old versions of documents saved by apps (File > Revert To > Browse All Versions).",
+      impact="Managed by macOS. It shrinks when the documents are deleted. Never delete it by hand."),
+    R("fsevents", "File system event log (.fseventsd)", SYS, V, REP, paths=("/System/Volumes/Data/.fseventsd",),
+      why="Change journal used by Time Machine, Spotlight and backup apps.",
+      impact="Managed by macOS. Leave it alone."),
+    R("sleep-image", "Sleep image & swap", SYS, V, REP, paths=("/private/var/vm",),
+      why="RAM contents saved for hibernation, plus swap files when memory is full.",
+      impact="Managed by macOS. A restart shrinks swap, and closing memory-hungry apps prevents it."),
+    R("volume-trash", "Trash on external drives", SYS, C, CON, probe=_probe_volume_trash,
+      why="Files you deleted from USB/external drives stay in a hidden .Trashes folder on that drive.",
+      impact="Permanently deleted from those drives."),
+
+    # ---------------------------------------------------------------- more user junk
+    R("app-leftovers", "Leftovers of uninstalled apps", APPS, V, DEL, trash=True, probe=_probe_leftovers,
+      why="Settings, containers and data folders named after apps that are no longer installed "
+          "(what 'uninstaller' tools remove).",
+      impact="Moved to the Trash, so you can put anything back. If you reinstall the app, it starts fresh."),
+    R("saved-app-state", "Saved window state", APPS, C, CON, paths=("~/Library/Saved Application State",),
+      min_age_days=7, why="Window positions apps restore when reopened. Grows with apps you no longer use.",
+      impact="Apps reopen without their previous windows. Items used in the last week are kept."),
+    R("old-installers", "Old installers in Downloads (.dmg/.pkg/.xip)", SYS, C, DEL, trash=True, min_age_days=14,
+      paths=("~/Downloads/*.dmg", "~/Downloads/*.pkg", "~/Downloads/*.mpkg", "~/Downloads/*.xip"),
+      why="Disk images and installers you already used. Apps are installed; the installers are not needed.",
+      impact="Moved to the Trash. Only files older than 2 weeks."),
+    R("adobe-media-cache", "Adobe media cache (Premiere, After Effects)", APPS, C, CON,
+      paths=("~/Library/Application Support/Adobe/Common/Media Cache Files",
+             "~/Library/Application Support/Adobe/Common/Media Cache",
+             "~/Library/Application Support/Adobe/Common/Peak Files"),
+      quit_apps=("Adobe Premiere Pro", "After Effects", "Adobe Media Encoder"),
+      why="Conformed audio and indexed media for every project you've edited. Commonly 20-100 GB.",
+      impact="Rebuilt when you open a project (first open is slower)."),
+    R("spotify-cache", "Spotify streaming cache", APPS, C, CON,
+      paths=("~/Library/Application Support/Spotify/PersistentCache",), quit_apps=("Spotify",),
+      why="Songs Spotify cached while streaming (can reach 10 GB).",
+      impact="Downloaded (offline) playlists must be downloaded again."),
+    R("telegram-media", "Telegram media cache", APPS, C, CON,
+      paths=("~/Library/Group Containers/*.ru.keepcoder.Telegram/*/account-*/postbox/media",
+             "~/Library/Application Support/Telegram Desktop/tdata/user_data"),
+      quit_apps=("Telegram",), why="Photos and videos Telegram cached from your chats.",
+      impact="Media is still in the cloud and re-downloads when you open a chat."),
+    R("simulator-app-caches", "Caches inside simulators", XCODE, S, CON,
+      paths=("~/Library/Developer/CoreSimulator/Devices/*/data/Library/Caches",),
+      why="Caches of apps you ran in the iOS simulator.", impact="Rebuilt by those apps."),
+    R("configurator-firmware", "Apple Configurator firmware", SYS, S, CON,
+      paths=("~/Library/Group Containers/K36BKF7T3D.group.com.apple.configurator/Library/Caches/Firmware",),
+      why="Device firmware downloaded by Apple Configurator.", impact="Re-downloaded when needed."),
+    R("old-ios-apps", "Old iOS app backups (.ipa)", SYS, C, CON,
+      paths=("~/Music/iTunes/iTunes Media/Mobile Applications",),
+      why="iPhone apps iTunes kept from the old days of syncing apps.", impact="None; apps come from the App Store."),
+    R("messages-attachments", "Messages attachments", SYS, V, REP, paths=("~/Library/Messages/Attachments",),
+      why="Photos, videos and files from your conversations.",
+      impact="Review in System Settings > General > Storage > Messages, or set Keep messages: 1 Year."),
+    R("nvm-cache", "nvm download cache", PKG, S, CON, paths=("~/.nvm/.cache",),
+      why="Node.js tarballs nvm downloaded.", impact="Re-downloaded when installing a Node version."),
+    R("rustup-toolchains", "Rust toolchains", PKG, V, REP, paths=("~/.rustup/toolchains",),
+      why="Every Rust toolchain you installed (~1 GB each).",
+      impact="Use `rustup toolchain list` and `rustup toolchain uninstall <name>`."),
+    R("gem-cache", "Ruby gem cache", PKG, S, CON, paths=("~/.gem/ruby/*/cache", "~/.gem/specs"),
+      why="Downloaded .gem files.", impact="Re-downloaded when installing gems."),
 ]
 
 

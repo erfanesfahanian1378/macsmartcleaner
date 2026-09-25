@@ -10,11 +10,11 @@ from __future__ import annotations
 
 import glob
 import os
-import plistlib
 import re
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+from .apps import installed_apps
 from .context import Context
 from .rules import Action, Rule, Safety
 from .scanner import Finding, Target, measure_all
@@ -26,7 +26,7 @@ from .ui import NULL, Reporter
 HOG_PARENTS = [
     "~/Library", "~/Library/Application Support", "~/Library/Containers", "~/Library/Group Containers",
     "~/Library/Developer", "~", "/Library", "/Library/Application Support",
-    "/private/var", "/Users/Shared",
+    "/private/var", "/private/var/db", "/System/Volumes/Data", "/Users/Shared",
 ]
 # measured by drilling into them instead of as one blob
 DRILL = {"~/Library/Application Support", "~/Library/Containers", "~/Library/Group Containers",
@@ -46,6 +46,15 @@ EXPLAIN: Dict[str, str] = {
     "/private/var/folders": "Per-user temp/caches - reboot clears much of it; `msc` cleans the safe part.",
     "/private/var/db": "System databases (Spotlight, updates, diagnostics) - leave alone; "
                        "if huge, a restart or Safe Mode boot trims it.",
+    "/private/var/db/diagnostics": "Unified system logs - `msc` can erase them (rule unified-logs).",
+    "/private/var/db/uuidtext": "Symbol data for the unified logs - shrinks together with them.",
+    "/private/var/db/Spotlight-V100": "Spotlight's system index - rebuild it via Optimize > Rebuild Spotlight.",
+    "/private/var/db/dyld": "Shared library cache - managed by macOS.",
+    "/private/var/db/oah": "Rosetta 2 translation cache - macOS rebuilds it; it shrinks after a restart.",
+    "/System/Volumes/Data/.Spotlight-V100": "Spotlight index - use rule spotlight-index to rebuild (never delete by hand).",
+    "/System/Volumes/Data/.DocumentRevisions-V100": "Document version history - managed by macOS.",
+    "/System/Volumes/Data/.fseventsd": "File-change journal for Time Machine/Spotlight - leave alone.",
+    "/System/Volumes/Data/.MobileBackups": "Old-style local Time Machine data - thin snapshots via tm-snapshots.",
     "~/Library/Mail": "Mail messages & attachments - reduce by deleting big mails or 'Download attachments: None'.",
     "~/Library/Messages": "iMessage attachments - Settings > General > Storage > Messages to review.",
     "~/Library/Mobile Documents": "iCloud Drive local copies - enable 'Optimize Mac Storage'.",
@@ -62,28 +71,6 @@ class Hog:
     usage: Usage
     verdict: str   # likely-junk | orphaned | stale | data | system | unknown
     reason: str
-
-
-def installed_apps(ctx: Context) -> Tuple[Set[str], Set[str]]:
-    """Return (bundle ids, lower-cased app names) of installed apps."""
-    ids: Set[str] = set()
-    names: Set[str] = set()
-    for base in ("/Applications", "/Applications/Utilities", "/System/Applications", "~/Applications",
-                 "/Applications/Setapp"):
-        for app in glob.glob(os.path.join(ctx.path(base), "*.app")) + glob.glob(
-                os.path.join(ctx.path(base), "*", "*.app")):
-            names.add(os.path.splitext(os.path.basename(app))[0].lower())
-            try:
-                with open(os.path.join(app, "Contents", "Info.plist"), "rb") as fh:
-                    info = plistlib.load(fh)
-                if info.get("CFBundleIdentifier"):
-                    ids.add(info["CFBundleIdentifier"].lower())
-                for k in ("CFBundleName", "CFBundleDisplayName"):
-                    if info.get(k):
-                        names.add(str(info[k]).lower())
-            except Exception:  # unreadable/odd plist - name from folder is enough
-                pass
-    return ids, names
 
 
 def _looks_orphaned(name: str, parent: str, ids: Set[str], names: Set[str]) -> bool:
@@ -121,7 +108,7 @@ def classify(name: str, parent: str, u: Usage, ctx: Context, ids: Set[str], name
 
 
 def find_space_hogs(ctx: Context, findings: Sequence[Finding], min_size: int = 1_000_000_000,
-                    workers: int = 8, reporter: Reporter = NULL) -> List[Hog]:
+                    workers: Optional[int] = None, reporter: Reporter = NULL) -> List[Hog]:
     covered = [os.path.normpath(f.root) for f in findings if f.root] + [
         os.path.normpath(t.path) for f in findings for t in f.targets]
 
@@ -145,6 +132,10 @@ def find_space_hogs(ctx: Context, findings: Sequence[Finding], min_size: int = 1
                 continue  # only dot-dirs in home; your own folders aren't "System Data"
             if parent == "~" and e.name in (".Trash",):
                 continue
+            if parent == "/System/Volumes/Data" and not e.name.startswith("."):
+                continue  # everything else there is the same data seen via /Users, /Library...
+            if parent == "/private/var" and e.name == "db":
+                continue  # drilled into separately
             candidates.append((e.path, parent))
 
     reporter.begin("hogs", "Hunting for unknown big folders", total=len(candidates))
@@ -171,7 +162,7 @@ def find_space_hogs(ctx: Context, findings: Sequence[Finding], min_size: int = 1
         display = _display(ctx, path)
         if display in EXPLAIN:
             verdict, reason = "system", EXPLAIN[display]
-        elif parent.startswith("/private/var"):
+        elif parent.startswith(("/private/var", "/System/Volumes")):
             verdict, reason = "system", "macOS system data - don't delete by hand"
         else:
             verdict, reason = classify(os.path.basename(path), ctx.path(parent), u, ctx, ids, names)
@@ -262,7 +253,7 @@ def _project_last_touched(project: str, artifact_names: Set[str]) -> float:
 
 
 def find_project_artifacts(ctx: Context, roots: Optional[Iterable[str]] = None, max_depth: int = 7,
-                           workers: int = 8, reporter: Reporter = NULL) -> List[Finding]:
+                           workers: Optional[int] = None, reporter: Reporter = NULL) -> List[Finding]:
     roots = [ctx.path(r) for r in (roots or PROJECT_ROOT_GUESSES)]
     seen_roots: Set[str] = set()
     hits: List[Tuple[str, str, ArtifactKind]] = []  # (project dir, artifact path, kind)
@@ -312,7 +303,7 @@ def find_project_artifacts(ctx: Context, roots: Optional[Iterable[str]] = None, 
     return findings
 
 
-def _measure_fraction(paths: List[str], reporter: Reporter, workers: int) -> Dict[str, Usage]:
+def _measure_fraction(paths: List[str], reporter: Reporter, workers: Optional[int]) -> Dict[str, Usage]:
     """measure_all, mapping completed paths onto the second half of the stage."""
     done = [0]
 
@@ -334,3 +325,83 @@ def _fmt_days(d: float) -> str:
     if d == float("inf"):
         return "unknown"
     return f"{int(d)}d"
+
+
+# --------------------------------------------------------------------------- large & old files
+
+PACKAGE_EXTS = (".photoslibrary", ".app", ".fcpbundle", ".musiclibrary", ".tvlibrary", ".imovielibrary",
+                ".logicx", ".band", ".aplibrary", ".lrdata", ".vmwarevm", ".pvm", ".utm", ".sparsebundle",
+                ".xcarchive", ".bundle", ".framework")
+SKIP_LARGE = {"Library", ".Trash", "node_modules", ".git", ".cache", ".npm", ".gradle", ".cargo", ".rustup",
+              ".ollama", ".lmstudio", ".docker", ".colima", ".lima", ".android"}
+OLD_DAYS = 180
+
+
+def _inside_package(path: str) -> bool:
+    return any(part.endswith(PACKAGE_EXTS) for part in path.split(os.sep)[:-1])
+
+
+def find_large_files(ctx: Context, findings: Sequence[Finding] = (), min_size: int = 500_000_000,
+                     reporter: Reporter = NULL) -> List[Hog]:
+    """Big files in your home folder (outside Library), marked 'old' if untouched for 6+ months.
+
+    Uses Spotlight (instant) when available, otherwise walks the home folder.
+    """
+    reporter.begin("large", "Finding large & old files")
+    home = ctx.home
+    claimed = {os.path.normpath(t.path) for f in findings for t in f.targets}
+    candidates: List[str] = []
+    res = ctx.run(["mdfind", "-onlyin", home, f"kMDItemFSSize >= {min_size}"], timeout=60, as_user=True) \
+        if ctx.root == "/" else None
+    if res is not None and res.returncode == 0:
+        candidates = [ln for ln in res.stdout.splitlines() if ln.strip()]
+    else:
+        stack = [home]
+        while stack:
+            d = stack.pop()
+            reporter.current(d)
+            try:
+                it = os.scandir(d)
+            except OSError:
+                continue
+            with it:
+                try:
+                    for e in it:
+                        try:
+                            if e.is_dir(follow_symlinks=False):
+                                if e.name in SKIP_LARGE or e.name.endswith(PACKAGE_EXTS) or \
+                                        (e.name.startswith(".") and d == home):
+                                    continue
+                                stack.append(e.path)
+                            elif e.is_file(follow_symlinks=False) and e.stat(follow_symlinks=False).st_size >= min_size:
+                                candidates.append(e.path)
+                        except OSError:
+                            continue
+                except OSError:
+                    continue
+    out: List[Hog] = []
+    lib = os.path.join(home, "Library") + os.sep
+    for path in candidates:
+        if path.startswith(lib) or _inside_package(path) or os.path.normpath(path) in claimed:
+            continue
+        rel = path[len(home) + 1:] if path.startswith(home + os.sep) else path
+        if rel.split(os.sep)[0] in SKIP_LARGE:
+            continue
+        try:
+            st = os.lstat(path)
+        except OSError:
+            continue
+        if not os.path.isfile(path) or os.path.islink(path):
+            continue
+        size = getattr(st, "st_blocks", 0) * 512 or st.st_size
+        if size < min_size:
+            continue
+        last = max(st.st_mtime, st.st_atime)
+        days = int(ctx.days_since(last))
+        u = Usage(bytes=size, files=1, newest_mtime=last)
+        verdict = "old" if days >= OLD_DAYS else "large"
+        reason = f"not opened or changed for {days} days" if verdict == "old" else f"last used {days} days ago"
+        out.append(Hog(path, _display(ctx, path), u, verdict, reason))
+    out.sort(key=lambda h: h.usage.bytes, reverse=True)
+    reporter.end(f"{len(out)} file(s) over {min_size // 1_000_000} MB")
+    return out

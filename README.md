@@ -218,8 +218,12 @@ are **never deleted automatically**. If you decide one should go,
 | **Time Machine local snapshots** (their size isn't shown anywhere) | 20-200 GB | anyone with Time Machine |
 | iPhone/iPad backups and firmware downloads | 10-200 GB | anyone with an iPhone/iPad |
 | App caches: browsers, Spotify, Slack, Discord, Teams, VS Code, Adobe… | 2-30 GB | everyone |
-| Logs, crash reports, Mail attachment copies, Trash | 1-10 GB | everyone |
-| Leftovers from apps you already deleted | varies | everyone |
+| Logs, crash reports, Mail attachment copies, Trash (including external drives' trash) | 1-10 GB | everyone |
+| **Leftovers of uninstalled apps**: containers, group containers, saved state, web data | 1-50 GB | everyone |
+| **Large & old files** in your home folder: videos, disk images, archives you haven't opened in months | varies | everyone |
+| Old installers in Downloads (`.dmg`, `.pkg`, `.xip`), old "Install macOS" apps, macOS update leftovers | 5-40 GB | everyone |
+| Adobe media cache, Spotify streaming cache, Telegram media, Steam caches | 5-100 GB | creators, gamers |
+| **System level** (with `sudo`): Spotlight index (`.Spotlight-V100`), unified logs, rotated logs, `/cores` crash dumps, `/Library/Caches` | 2-50 GB | everyone |
 | Xcode DerivedData, device support, simulators & runtimes | 10-100 GB | iOS/macOS developers |
 | Docker / OrbStack / Colima disks, VMs, Android emulators | 20-150 GB | developers |
 | npm, pnpm, yarn, bun, pip, uv, conda, Homebrew, Gradle, Maven, Cargo, Go, CocoaPods, Flutter caches | 5-60 GB | developers |
@@ -227,7 +231,29 @@ are **never deleted automatically**. If you decide one should go,
 | Unreal DerivedDataCache & vault, Unity caches & editors, Godot templates, Steam shader cache | 5-100 GB | game developers |
 | `node_modules`, Unity `Library/`, Unreal `Intermediate/`, `.venv`, Rust `target/`… in idle projects | 5-100 GB | developers |
 
-Run `msc rules` for the full list, or `msc explain <rule-id>` for the details of one rule.
+Run `msc rules` for the full list of 85 rules, or `msc explain <rule-id>` for the details of one rule.
+Run **`sudo msc`** once in a while to include the system-level locations. Without it they're shown with
+a "?" size, because macOS only lets an admin look inside them.
+
+### Compared with CleanMyMac X
+
+| | CleanMyMac X | msc |
+|---|---|---|
+| System junk (caches, logs, Xcode, broken downloads) | ✔ | ✔ plus 30+ developer, AI and game-dev caches it doesn't know |
+| Time Machine local snapshots | ✔ | ✔ and it tells you they're there even though macOS hides their size |
+| Large & old files | ✔ | ✔ (Spotlight-powered, instant) |
+| Uninstalled-app leftovers | ✔ | ✔ moved to the Trash, so it's reversible |
+| Startup items / login items | ✔ | ✔ including launch daemons, with "broken leftover" detection |
+| Maintenance (DNS, Spotlight, purge, periodic…) | ✔ | ✔ |
+| Live system monitor | menu bar app | ✔ full dashboard: per-core CPU, GPU, memory pressure, network, battery |
+| Skips caches of apps you have open | partly | ✔ Smart Clean checks every running app |
+| Explains every item, dry-run, no hidden actions | – | ✔ |
+| Price, account, background process | subscription | free, none, none |
+
+**Things we deliberately don't do.** Some cleaners remove app **language files** and "thin" **universal
+binaries**. On modern macOS that breaks apps' code signatures: apps can refuse to launch or stop
+updating, and it saves little. We also never delete `.Spotlight-V100`, `.DocumentRevisions-V100` or
+`.fseventsd` by hand. Spotlight is rebuilt properly with `mdutil -E`, and the other two are managed by macOS.
 
 ## All commands
 
@@ -250,7 +276,7 @@ msc trash "<path>"                          # move a reviewed folder to the Tras
 msc schedule install                        # automatic weekly "safe" cleanup (Sundays 11:00)
 msc schedule remove
 msc rules | msc explain <id> | msc doctor
-sudo msc scan                               # also measures /Library and /private/var
+sudo msc                                    # include system-level junk (Spotlight index, system logs, /cores…)
 ```
 
 ## FAQ
@@ -265,6 +291,10 @@ or restart. Space freed from Time Machine snapshots can take a few minutes to sh
 **What won't it touch?** Your personal folders, Photos, Mail, Messages, iCloud Drive,
 Keychains, `/System`, swap (`/private/var/vm`) and macOS databases. A restart clears swap and
 many temporary files on its own.
+
+**How is scanning so fast?** Folders are split into sub-folders and measured by several helper
+processes at once (one per CPU core), streaming progress back. A folder measured once is never walked
+again in the same scan, and large files come straight from the Spotlight index.
 
 **Will Optimize make my Mac faster?** Honestly: macOS manages memory and caches well on its own.
 These tasks fix specific problems (stale DNS, broken previews, a stuck Finder, a bloated

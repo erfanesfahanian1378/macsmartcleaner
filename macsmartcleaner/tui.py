@@ -23,7 +23,7 @@ from .rules import Action, Safety
 from .scanner import Finding
 from .sizes import human
 
-TABS = ["Junk & caches", "Projects", "Big folders"]
+TABS = ["Junk & caches", "Projects", "Big folders", "Large files"]
 HELP = [
     ("↑↓", "move"), ("space", "select"), ("tab", "lists"), ("a", "safe"),
     ("c", "+caution"), ("n", "none"), ("o", "Finder"), ("d", "delete"), ("r", "rescan"), ("q", "back"),
@@ -75,6 +75,13 @@ def _items_from(ctx: Context, findings: Sequence[Finding], projects: Sequence[Fi
                            f"Project last touched {idle} days ago." if idle is not None else ""],
                           finding=p, selected=idle is not None and idle >= 90))
     for h in hogs:
+        if h.verdict in ("large", "old"):
+            items.append(Item(3, h.usage.bytes, True, os.path.basename(h.path), h.display, h.verdict,
+                              [h.reason, "",
+                               "One of the biggest files in your home folder. Only you know if you still need it:",
+                               "it is moved to the Trash, so you can undo that. Press o to see it in Finder."],
+                              hog=h))
+            continue
         items.append(Item(2, h.usage.bytes, True, os.path.basename(h.path), h.display, h.verdict,
                           [h.reason, "",
                            "Not a known junk location, so it's only moved to the Trash (you can undo that).",
@@ -88,8 +95,8 @@ class Browser(Canvas):
         self.ctx = ctx
         self.items = items
         self.tab = 0
-        self.cursor = [0, 0, 0]
-        self.scroll = [0, 0, 0]
+        self.cursor = [0] * len(TABS)
+        self.scroll = [0] * len(TABS)
         self.flash = ""
 
     # ---- data helpers ----------------------------------------------------
@@ -102,8 +109,8 @@ class Browser(Canvas):
 
     # ---- curses ------------------------------------------------------------
     def tag_attr(self, tag: str) -> int:
-        n = {"safe": 1, "likely-junk": 1, "caution": 2, "orphaned": 2, "stale": 2, "review": 3,
-             "data": 3, "info": 4, "system": 4}.get(tag, 7)
+        n = {"safe": 1, "likely-junk": 1, "caution": 2, "orphaned": 2, "stale": 2, "old": 2, "review": 3,
+             "data": 3, "large": 3, "info": 4, "system": 4}.get(tag, 7)
         return curses.color_pair(n)
 
     def draw(self) -> None:
@@ -251,7 +258,7 @@ class Browser(Canvas):
                 self.tab = (self.tab + 1) % len(TABS)
             elif k in (curses.KEY_BTAB, curses.KEY_LEFT, ord("h")):
                 self.tab = (self.tab - 1) % len(TABS)
-            elif k in (ord("1"), ord("2"), ord("3")):
+            elif k in (ord("1"), ord("2"), ord("3"), ord("4")):
                 self.tab = k - ord("1")
             elif k == ord(" ") and rows:
                 item = rows[cur]

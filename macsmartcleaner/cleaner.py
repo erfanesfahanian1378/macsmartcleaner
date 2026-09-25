@@ -134,6 +134,18 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
                 reporter.step()
                 reporter.count(t.usage.files, t.usage.bytes)
                 continue
+            if rule.trash:
+                try:
+                    move_to_trash([safe_path], ctx)
+                    o.freed += t.usage.bytes
+                    o.messages.append("moved to the Trash - empty it to free the space") if not any(
+                        "Trash" in m for m in o.messages) else None
+                except (OSError, safety.UnsafePath) as e:
+                    o.ok = False
+                    o.messages.append(f"{t.path}: {e}")
+                reporter.step()
+                reporter.count(t.usage.files, t.usage.bytes)
+                continue
             try:
                 _remove(safe_path)
             except OSError as e:

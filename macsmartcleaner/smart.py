@@ -17,7 +17,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Set, Tuple
 
-from . import cleaner, ui
+from . import cleaner, sizes, ui
 from .context import Context
 from .rules import Rule, Safety
 from .scanner import Finding, scan
@@ -142,7 +142,8 @@ def run(ctx: Context, rules: Sequence[Rule], assume_yes: bool = False, quiet: bo
         if sys.stdout.isatty():
             sys.stdout.write("\033[H\033[2J")
         ui.banner("smart clean - caches & junk, skipping apps you have open")
-    with ui.make_reporter([("probe", 3), ("rules", 97)], quiet=quiet, counter_label="scanned") as rep:
+    with ui.make_reporter([("probe", 3), ("rules", 97)], quiet=quiet, counter_label="scanned") as rep, \
+            sizes.cache_session():
         findings = scan(smart_rules(rules), ctx, reporter=rep)
     apps = running_apps(ctx)
     plan = build_plan(findings, apps, ctx)

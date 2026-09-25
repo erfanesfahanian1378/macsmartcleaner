@@ -104,6 +104,37 @@ class TestSizes(unittest.TestCase):
             self.assertEqual(u.errors, 1)
 
 
+class TestParallelWalker(unittest.TestCase):
+    def tree(self, d, n=30):
+        for a in range(n):
+            for b in range(3):
+                write(os.path.join(d, f"a{a}", f"b{b}", "f"), 1000 + a * 10 + b)
+        os.link(os.path.join(d, "a0", "b0", "f"), os.path.join(d, "a0", "b1", "hard"))
+
+    def test_identical_to_measure_and_cache_reuse(self):
+        from macsmartcleaner import sizes
+        with tempfile.TemporaryDirectory() as d:
+            self.tree(d)
+            roots = [os.path.join(d, f"a{a}") for a in range(30)] + [d]
+            want = {r: sizes.measure(r) for r in roots}
+            got = sizes.measure_many(roots, workers=3)
+            for r in roots:
+                self.assertEqual((got[r].bytes, got[r].files, got[r].newest_mtime),
+                                 (want[r].bytes, want[r].files, want[r].newest_mtime), r)
+            with sizes.cache_session() as sess:
+                sizes.measure_many(roots[:-1], workers=3)
+                self.assertEqual(sizes.measure_many([d], workers=3)[d].bytes, want[d].bytes)
+                self.assertIn(d, sess.cache)
+
+    def test_dead_workers_fall_back_in_process(self):
+        from macsmartcleaner import sizes
+        with tempfile.TemporaryDirectory() as d:
+            self.tree(d)
+            with unittest.mock.patch.object(sizes, "_WORKER_CMD", "import sys; sys.exit(3)"):
+                got = sizes.measure_many([d], workers=3)
+            self.assertEqual(got[d].bytes, sizes.measure(d).bytes)
+
+
 class TestRules(unittest.TestCase):
     def test_unique_ids_and_user_rules(self):
         self.assertEqual(len({r.id for r in BUILTIN_RULES}), len(BUILTIN_RULES))
@@ -165,6 +196,21 @@ class TestSafety(FakeMac):
         safety.check(self.h("Library/Caches/com.x"), self.ctx)
         safety.check(self.h("Documents/proj/node_modules"), self.ctx)
         safety.check(os.path.join(self.root, "Library/Caches/foo"), self.ctx)
+
+    def test_system_exceptions_are_narrow(self):
+        ok = [os.path.join(self.root, "Applications/Install macOS Sonoma.app"),
+              os.path.join(self.root, "Volumes/USB/.Trashes/501/old.mov"),
+              os.path.join(self.root, "cores/core.123")]
+        bad = [os.path.join(self.root, "Applications/Install macOS Sonoma.app/Contents/Helper.app"),
+               os.path.join(self.root, "Applications/Safari.app"),
+               os.path.join(self.root, "Volumes/USB/Photos/x.jpg"),
+               os.path.join(self.root, "Volumes/USB/.Trashes"),
+               os.path.join(self.root, "cores")]
+        for p in ok:
+            safety.check(p, self.ctx)
+        for p in bad:
+            with self.assertRaises(safety.UnsafePath, msg=p):
+                safety.check(p, self.ctx)
 
     def test_symlinked_parent_cannot_escape(self):
         os.makedirs(os.path.join(self.root, "System/Library"))
@@ -250,11 +296,17 @@ class TestDiscover(FakeMac):
     def test_cloud_storage_is_never_walked(self):
         write(self.h("Library/CloudStorage/OneDrive-Uni/big.bin"), 2_000_000)
         write(self.h("Library/Mobile Documents/com~apple~CloudDocs/big.bin"), 2_000_000)
+        write(self.h("Library/Application Support/SomeApp/data.bin"), 2_000_000)
         walked = []
         from macsmartcleaner import scanner
-        real = scanner.measure
-        with unittest.mock.patch.object(scanner, "measure", lambda p, cb=None: walked.append(p) or real(p, cb)):
+        real = scanner.measure_many
+
+        def spy(paths, **kw):
+            walked.extend(paths)
+            return real(paths, **kw)
+        with unittest.mock.patch.object(scanner, "measure_many", spy):
             discover.find_space_hogs(self.ctx, [], min_size=1)
+        self.assertTrue(walked)
         self.assertFalse([p for p in walked if "CloudStorage" in p or "Mobile Documents" in p], walked)
 
 
@@ -281,6 +333,12 @@ class TestInteractive(FakeMac):
         self.assertNotIn("OldApp", titles)
         self.assertIn("Hugging Face models", titles)
         self.assertTrue(os.path.exists(self.h(".Trash/OldApp/data.db")))
+
+    def test_every_tab_has_cursor_state(self):
+        from macsmartcleaner import tui
+        b = tui.Browser(self.ctx, [])
+        self.assertEqual(len(b.cursor), len(tui.TABS))
+        self.assertEqual(len(b.scroll), len(tui.TABS))
 
     def test_live_reporter_renders_percentage(self):
         from macsmartcleaner import ui

@@ -5,6 +5,7 @@ Documents, Photos library, keychains or anything owned by the OS.
 """
 from __future__ import annotations
 
+import fnmatch
 import os
 from typing import List
 
@@ -34,11 +35,23 @@ NEVER_INSIDE_ABS = ["/System", "/usr", "/bin", "/sbin", "/etc", "/private/etc", 
 ALLOWED_ABS = [
     "/Library/Caches", "/Library/Logs", "/private/var/log", "/private/var/folders",
     "/Library/Developer/CoreSimulator/Caches", "/Users/Shared/UnrealEngine/Launcher/VaultCache",
+    "/cores", "/macOS Install Data", "/System/Volumes/Data/macOS Install Data",
+]
+# Specific places inside otherwise off-limits areas that a rule may remove (glob patterns).
+ALLOWED_EXCEPTIONS = [
+    "/Applications/Install macOS *.app",   # old macOS installer apps (moved to Trash)
+    "/Volumes/*/.Trashes/*/*",             # items in an external drive's trash
 ]
 
 
 class UnsafePath(Exception):
     pass
+
+
+def _match_components(path: str, pattern: str) -> bool:
+    """Glob match where each * stays inside one path component (unlike fnmatch)."""
+    a, b = path.rstrip("/").split("/"), pattern.rstrip("/").split("/")
+    return len(a) == len(b) and all(fnmatch.fnmatchcase(x, y) for x, y in zip(a, b))
 
 
 def _norm(p: str) -> str:
@@ -66,6 +79,10 @@ def check(path: str, ctx: Context) -> str:
     for prot in protected:
         if _within(prot.rstrip("/") or "/", p):  # p is prot itself or a parent of it
             raise UnsafePath(f"refusing to delete protected location {p}")
+
+    for pattern in ALLOWED_EXCEPTIONS:
+        if _match_components(p, ctx.path(pattern)):
+            return p
 
     never = [os.path.join(home, r) for r in NEVER_INSIDE_HOME] + [absolute(a) for a in NEVER_INSIDE_ABS]
     for n in never:

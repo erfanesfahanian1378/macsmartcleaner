@@ -8,7 +8,7 @@ import shutil
 import sys
 from typing import List, Optional, Sequence
 
-from . import __version__, cleaner, discover, report, schedule, ui
+from . import __version__, cleaner, discover, report, schedule, sizes, ui
 from .context import Context
 from .rules import Action, Rule, default_user_rules_path, load_rules
 from .scanner import Finding, scan
@@ -21,12 +21,12 @@ def full_scan(ctx: Context, args, projects: bool = True, hogs: bool = True, hog_
     if projects:
         stages.append(("projects", 17))
     if hogs:
-        stages.append(("hogs", 40))
+        stages += [("hogs", 35), ("large", 5)]
     if not args.quiet:
         ui.banner("scanning your Mac - nothing is deleted during a scan")
     found_projects: List[Finding] = []
     found_hogs: list = []
-    with ui.make_reporter(stages, quiet=args.quiet, counter_label="scanned") as rep:
+    with ui.make_reporter(stages, quiet=args.quiet, counter_label="scanned") as rep, sizes.cache_session():
         findings = scan(_rules(ctx, args), ctx, reporter=rep)
         if projects:
             found_projects = discover.find_project_artifacts(ctx, getattr(args, "projects", None) or None,
@@ -34,6 +34,7 @@ def full_scan(ctx: Context, args, projects: bool = True, hogs: bool = True, hog_
         if hogs:
             found_hogs = discover.find_space_hogs(ctx, findings + found_projects, min_size=parse_size(hog_min),
                                                   reporter=rep)
+            found_hogs += discover.find_large_files(ctx, findings + found_projects, reporter=rep)
     return findings, found_projects, found_hogs
 
 

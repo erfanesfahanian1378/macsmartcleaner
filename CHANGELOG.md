@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+- **Faster scans**: folders are measured by a pool of helper processes in parallel (2x faster even on a
+  4-core machine with warm caches, more on cold disks), and a folder is never walked twice in one scan.
+  Results are identical to the sequential walker, including hard links
+- **25 new rules (85 total)**: Spotlight index (rebuilt properly), unified logs, rotated logs, `/cores`,
+  macOS update leftovers, old "Install macOS" apps, external drives' trash, uninstalled-app leftovers
+  (moved to Trash), saved window state, old installers in Downloads, Adobe media cache, Spotify cache,
+  Telegram media, Steam caches, simulator app caches, browser profile caches (Chrome/Brave/Edge/Arc), and more
+- **Large & old files** tab in Deep Scan (Spotlight-powered)
+- With `sudo`, discovery also explains `/System/Volumes/Data` hidden folders and `/private/var/db`
+- Root-only folders show "?" with "run with sudo to measure" instead of a misleading 0
+
 - **Home menu**: `msc` opens an animated menu with a live CPU/RAM/disk strip
 - **Smart Clean** (`msc smart`): one-key cleanup of safe caches and junk that skips the caches of apps
   that are currently open
