@@ -10,10 +10,12 @@ Open *System Settings > General > Storage* on almost any Mac and you'll find a g
 | | Tool | What it does |
 |---|---|---|
 | ✦ | **Smart Clean** | One key clears caches and junk. It **skips the caches of apps you have open**, so nothing glitches |
+| ◧ | **Space Lens** | Browse any folder, or the whole disk including System Data, sorted by size. Drill down and send anything to the Trash |
+| ⌫ | **Uninstaller** | Removes an app **together with everything it left behind**: settings, caches, containers, agents. All of it goes to the Trash |
 | ◎ | **Deep Scan** | Finds everything using space (about 60 known junk sources plus anything big it doesn't recognise). Browse it, read what each item is, pick what goes |
 | ↑ | **Startup Items** | Every app and helper that launches automatically. Disable or remove them, and spot leftovers from deleted apps |
 | ⚙ | **Optimize** | Flush DNS, free inactive memory, fix a stuck Finder/Dock, rebuild Spotlight and "Open With", and more |
-| ◔ | **System Status** | A live dashboard: CPU per core, GPU, memory pressure, swap, disk, network, battery, thermal state, top processes |
+| ◔ | **System Status** | A live dashboard: CPU per core, GPU, memory pressure, swap, disk, network, battery, thermal state. Quit heavy apps from it |
 
 It **can't delete your stuff**: Documents, Photos, iCloud, Mail, Keychains and system folders are
 hard-blocked, and everything asks before it acts. No sign-up, no background app, no telemetry,
@@ -26,9 +28,11 @@ no dependencies. Nothing leaves your Mac.
 
                     ▶ ✦  Smart Clean     Clear caches & junk, skipping open apps        1
                       ◎  Deep Scan       See everything using space, pick what goes     2
-                      ↑  Startup Items   Apps & helpers that launch automatically       3
-                      ⚙  Optimize        DNS, memory, Finder/Dock, Spotlight & more     4
-                      ◔  System Status   Live CPU, GPU, memory, disk, network           5
+                      ◧  Space Lens      Browse any folder by size, drill down, trash   3
+                      ⌫  Uninstaller     Remove apps with all their leftovers           4
+                      ↑  Startup Items   Apps & helpers that launch automatically       5
+                      ⚙  Optimize        DNS, memory, Finder/Dock, Spotlight & more     6
+                      ◔  System Status   Live CPU, GPU, memory, disk, network           7
                       ×  Quit                                                           q
 
        CPU  ███········· 23%          RAM  ████████···· 11.8/16 GB     Disk ███████████· 188 GB free
@@ -137,6 +141,23 @@ selected if you pick it yourself, and big folders go to the Trash so you can und
 **Refresh any time:** press `r` in the list to rescan everything, or answer `r` after a cleanup.
 The list is rebuilt from a fresh scan, so you see the real current state.
 
+### ◧ Space Lens: `msc lens [folder]`
+
+Starts in your home folder and lists what's inside, biggest first, with a bar and a percentage.
+`Enter` opens a folder, `←` goes back, `d` moves the highlighted item to the Trash (protected
+places are refused), and `o` shows it in Finder. Press **`/`** to look at the **whole disk**,
+which is the fastest way to find where "System Data" really is. Run `sudo msc lens /` so that
+macOS lets it look inside every folder. Folders you've already opened are remembered, so going back is instant.
+
+### ⌫ Uninstaller: `msc uninstall`
+
+Lists every non-Apple app with its size and when you last opened it. Sort by size or by "not used
+for months" (`s`). Selecting an app finds everything that belongs to it, matched by the app's own
+bundle id: Application Support, caches, containers, group containers, preferences, saved state,
+web data, logs, launch agents, and (with your password) launch daemons and privileged helpers.
+Running apps are quit first, and everything is moved to the Trash so you can undo it.
+From scripts: `msc uninstall --list`, `msc uninstall "App Name" --dry-run`.
+
 ### ↑ Startup Items: `msc startup`
 
 Lists everything that starts automatically: your **Login Items**, your **Launch Agents**,
@@ -167,6 +188,8 @@ ones are pre-selected:
 | Restart Dock, Finder & menu bar | a stuck Dock, frozen Finder, unresponsive menu bar icons |
 | Check the startup disk | read-only file system check |
 | Rebuild Spotlight index | Spotlight not finding files, or a bloated index |
+| Free up purgeable space | macOS holding on to purgeable space (snapshots etc.) you need now |
+| Speed up Mail | slow Mail search and scrolling (compacts Mail's index, with Mail closed) |
 
 Press Enter and each task runs with its own animated spinner and a ✔/✖ result.
 From scripts: `msc optimize --list` and `msc optimize --run dns,quicklook` (or `--run recommended`).
@@ -182,7 +205,8 @@ A live dashboard that refreshes every second:
 - **Storage**: used and free, plus live disk throughput
 - **Network**: live download and upload speed with sparklines
 - **Battery & thermal**: charge, charging state, time left, and whether the Mac is being throttled
-- **Top processes** by CPU (`c`) or memory (`m`)
+- **Heaviest processes** by CPU (`c`) or memory (`m`). Select one and press `k` to quit it (`K` to force quit).
+  Core macOS processes are protected
 
 No admin password needed. `msc status --once` prints a one-off snapshot.
 
@@ -242,9 +266,13 @@ a "?" size, because macOS only lets an admin look inside them.
 | System junk (caches, logs, Xcode, broken downloads) | ✔ | ✔ plus 30+ developer, AI and game-dev caches it doesn't know |
 | Time Machine local snapshots | ✔ | ✔ and it tells you they're there even though macOS hides their size |
 | Large & old files | ✔ | ✔ (Spotlight-powered, instant) |
+| Uninstaller (app + all its files) | ✔ | ✔ matched by bundle id, all to the Trash |
 | Uninstalled-app leftovers | ✔ | ✔ moved to the Trash, so it's reversible |
+| Space Lens (browse by size) | ✔ | ✔ including the whole disk / System Data with `sudo` |
+| Heavy consumers (quit apps) | ✔ | ✔ from System Status, with core processes protected |
 | Startup items / login items | ✔ | ✔ including launch daemons, with "broken leftover" detection |
-| Maintenance (DNS, Spotlight, purge, periodic…) | ✔ | ✔ |
+| Maintenance (DNS, RAM, purgeable space, Mail, Spotlight, Launch Services…) | ✔ | ✔ |
+| System items that need admin rights | helper tool | asks for your password once, only for those items |
 | Live system monitor | menu bar app | ✔ full dashboard: per-core CPU, GPU, memory pressure, network, battery |
 | Skips caches of apps you have open | partly | ✔ Smart Clean checks every running app |
 | Explains every item, dry-run, no hidden actions | – | ✔ |
@@ -259,9 +287,11 @@ updating, and it saves little. We also never delete `.Spotlight-V100`, `.Documen
 
 ```bash
 msc                                         # animated home menu
-msc smart [--dry-run] [--yes]               # Smart Clean
+msc smart [--dry-run] [--yes] [--empty-trash]  # Smart Clean
 msc scan                                    # Deep Scan + interactive browser (r = rescan)
 msc scan --report [--html FILE] [--json FILE]  # text/web/JSON report instead
+msc lens [folder] [--list]                  # Space Lens (`/` = whole disk)
+msc uninstall [--list] [APP…] [--dry-run]   # remove apps with their leftovers
 msc startup [--list]                        # startup items
 msc optimize [--list] [--run IDS]           # maintenance tasks
 msc status [--once]                         # live system dashboard
@@ -316,6 +346,9 @@ discover.py heuristics for the unknown: big uncovered folders, orphaned app data
 cleaner.py  selects by safety level -> safety check on every path -> delete or run the tool's own
             cleaner (brew cleanup, docker prune, tmutil…) -> re-measures what was actually freed
 smart.py    Smart Clean: safe rules only, skips caches of running apps
+uninstall.py  finds an app's files by bundle id; quits, unloads agents, moves everything to the Trash
+apptools.py Space Lens and Uninstaller screens
+sizes.py    parallel folder measuring (helper processes, results identical to a plain walk)
 startup.py  login items + launch agents/daemons: detect, explain, enable/disable/remove
 optimize.py maintenance tasks built on Apple's own tools (dscacheutil, purge, qlmanage, mdutil…)
 sysinfo.py  live metrics: mach per-core CPU, vm_stat, sysctl, ioreg (GPU), pmset, netstat, iostat

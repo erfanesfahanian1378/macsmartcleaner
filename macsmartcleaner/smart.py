@@ -15,7 +15,7 @@ import re
 import shutil
 import sys
 from dataclasses import dataclass, field
-from typing import List, Optional, Sequence, Set, Tuple
+from typing import Dict, List, Optional, Sequence, Set, Tuple
 
 from . import cleaner, sizes, ui
 from .context import Context
@@ -23,7 +23,8 @@ from .rules import Rule, Safety
 from .scanner import Finding, scan
 from .sizes import human
 
-EXTRA_RULES = {"electron-caches", "editor-vsix", "huggingface-xet"}  # caution-tier caches that are fine here
+# caution-tier caches that are still fine for a one-key clean (they skip open apps / recent items)
+EXTRA_RULES = {"electron-caches", "editor-vsix", "huggingface-xet", "darwin-user-cache"}
 
 
 @dataclass
@@ -31,19 +32,20 @@ class RunningApps:
     names: Set[str] = field(default_factory=set)       # lower-case app names ("google chrome")
     bundle_ids: Set[str] = field(default_factory=set)  # lower-case ids ("com.google.chrome")
     display: List[str] = field(default_factory=list)
+    pretty: Dict[str, str] = field(default_factory=dict)  # bundle id / lower name -> "Google Chrome"
 
     def matches(self, folder: str) -> Optional[str]:
-        """Return the running app a cache folder belongs to, if any."""
+        """Return the (display) name of the running app a cache folder belongs to, if any."""
         n = folder.lower()
         if not n:
             return None
         for bid in self.bundle_ids:
             if n == bid or bid.startswith(n + ".") or n.startswith(bid + "."):
-                return bid
+                return self.pretty.get(bid, bid)
         for name in self.names:
             squashed = name.replace(" ", "")
             if n in (name, squashed) or (len(n) > 3 and (name.startswith(n + " ") or squashed.startswith(n))):
-                return name
+                return self.pretty.get(name, name)
         return None
 
 
@@ -63,11 +65,13 @@ def running_apps(ctx: Context) -> RunningApps:
             continue
         apps.names.add(m.group(2).lower())
         apps.display.append(m.group(2))
+        apps.pretty[m.group(2).lower()] = m.group(2)
         try:
             with open(os.path.join(m.group(1), "Contents", "Info.plist"), "rb") as fh:
                 bid = plistlib.load(fh).get("CFBundleIdentifier")
             if bid:
                 apps.bundle_ids.add(str(bid).lower())
+                apps.pretty[str(bid).lower()] = m.group(2)
         except Exception:  # noqa: BLE001
             pass
     apps.display.sort(key=str.lower)
@@ -135,60 +139,74 @@ def _electron_app(root: Optional[str]) -> str:
         return ""
 
 
+def _ask(prompt: str, default: bool) -> bool:
+    try:
+        answer = input(prompt).strip().lower()
+    except EOFError:
+        return False
+    return default if answer == "" else answer in ("y", "yes")
+
+
 def run(ctx: Context, rules: Sequence[Rule], assume_yes: bool = False, quiet: bool = False,
-        dry_run: bool = False) -> int:
+        dry_run: bool = False, empty_trash: bool = False) -> int:
     """The Smart Clean flow: quick scan -> plan -> confirm -> clean -> result."""
     if not quiet:
         if sys.stdout.isatty():
             sys.stdout.write("\033[H\033[2J")
         ui.banner("smart clean - caches & junk, skipping apps you have open")
+    wanted = smart_rules(rules) + [r for r in rules if r.id == "trash"]
     with ui.make_reporter([("probe", 3), ("rules", 97)], quiet=quiet, counter_label="scanned") as rep, \
             sizes.cache_session():
-        findings = scan(smart_rules(rules), ctx, reporter=rep)
+        findings = scan(wanted, ctx, reporter=rep)
+    trash = [f for f in findings if f.rule.id == "trash" and f.size]
+    findings = [f for f in findings if f.rule.id != "trash"]
     apps = running_apps(ctx)
     plan = build_plan(findings, apps, ctx)
 
     color = ui.color_enabled(sys.stdout)
     B, D, G, Y, R = (ui.BOLD, ui.DIM, ui.GREEN, ui.YELLOW, ui.RESET) if color else ("",) * 5
-    if not plan.findings:
+    trash_size = sum(f.size for f in trash)
+    if not plan.findings and not trash_size:
         print(f"\n  {G}✨ Already clean{R} - nothing safe to remove right now.")
         return 0
     print()
-    biggest = plan.findings[0].size or 1
-    for f in plan.findings[:12]:
-        bar_w = max(1, int(20 * f.size / biggest))
-        bar = ui.gradient_text("█" * bar_w) if color else "#" * bar_w
-        print(f"  {human(f.size):>9}  {bar}{' ' * (21 - bar_w)}{f.rule.name}")
-    if len(plan.findings) > 12:
-        rest = sum(f.size for f in plan.findings[12:])
-        print(f"  {human(rest):>9}  {D}+ {len(plan.findings) - 12} smaller items{R}")
+    if plan.findings:
+        biggest = plan.findings[0].size or 1
+        for f in plan.findings[:12]:
+            bar_w = max(1, int(20 * f.size / biggest))
+            bar = ui.gradient_text("█" * bar_w) if color else "#" * bar_w
+            print(f"  {human(f.size):>9}  {bar}{' ' * (21 - bar_w)}{f.rule.name}")
+        if len(plan.findings) > 12:
+            rest = sum(f.size for f in plan.findings[12:])
+            print(f"  {human(rest):>9}  {D}+ {len(plan.findings) - 12} smaller items{R}")
     if plan.skipped_open:
-        names = sorted({s[0].split("(")[-1].replace(" is open)", "") for s in plan.skipped_open})
+        names = sorted({s[0].rsplit("(", 1)[-1].replace(" is open)", "") for s in plan.skipped_open})
         print(f"\n  {Y}Skipping {human(sum(s[1] for s in plan.skipped_open))} of caches for open apps:{R} "
               f"{D}{', '.join(names[:8])}{'…' if len(names) > 8 else ''} - quit them and run again to include.{R}")
     if plan.skipped_root:
-        print(f"  {D}{human(plan.skipped_root)} in system folders needs `sudo msc smart`.{R}")
+        print(f"  {D}{human(plan.skipped_root)} more in system folders: run `sudo msc smart` to include it.{R}")
+    if trash_size:
+        print(f"  {D}Your Trash holds {human(trash_size)}.{R}")
     print(f"\n  {B}Ready to free {human(plan.total)}{R}")
 
     if dry_run:
         print("  (dry run - nothing deleted)")
         return 0
-    if not assume_yes:
-        if not sys.stdin.isatty():
-            print("  Not a terminal - rerun with --yes to clean.")
-            return 1
-        try:
-            answer = input(f"  Clean it now? {B}[Y/n]{R} ").strip().lower()
-        except EOFError:
-            answer = "n"
-        if answer not in ("", "y", "yes"):
-            print("  Nothing was deleted.")
-            return 1
+    if not assume_yes and not sys.stdin.isatty():
+        print("  Not a terminal - rerun with --yes to clean.")
+        return 1
+    go = assume_yes or (plan.findings and _ask(f"  Clean it now? {B}[Y/n]{R} ", True))
+    also_trash = bool(trash_size) and (empty_trash or (not assume_yes and _ask(
+        f"  Also empty the Trash ({human(trash_size)})? {B}[y/N]{R} ", False)))
+    todo = (plan.findings if go else []) + (trash if also_trash else [])
+    if not todo:
+        print("  Nothing was deleted.")
+        return 1
 
     before = shutil.disk_usage(ctx.home).free
     print()
     with ui.make_reporter([("clean", 1)], quiet=quiet, counter_label="freed") as rep:
-        outcomes = cleaner.execute(plan.findings, ctx, dry_run=False, reporter=rep)
+        outcomes = cleaner.execute(todo, ctx, dry_run=False, reporter=rep)
     after = shutil.disk_usage(ctx.home).free
     freed = sum(o.freed for o in outcomes)
     print(f"\n  {G}{B}✨ Freed {human(freed)}{R}   free space {human(before)} → {B}{human(after)}{R}")

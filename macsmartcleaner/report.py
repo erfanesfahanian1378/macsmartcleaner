@@ -105,7 +105,7 @@ def print_report(ctx: Context, findings: Sequence[Finding], hogs: Sequence[Hog],
 
     t = tier_totals(findings)
     pt = sum(p.size for p in projects)
-    snaps = [f for f in findings if not f.size_known]
+    snaps = [f for f in findings if f.rule.id == "tm-snapshots"]
     w("\n" + c("Summary", "1;4") + "\n")
     w(f"  {c('safe', '32')}     {human(t['safe']):>9}   msc clean                    (caches, logs - regenerated automatically)\n")
     w(f"  {c('caution', '33')}  {human(t['caution']):>9}   msc clean --tier caution     (re-downloads / slower rebuilds)\n")

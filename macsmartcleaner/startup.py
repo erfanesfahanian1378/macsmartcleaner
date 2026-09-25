@@ -115,12 +115,8 @@ def _parse_launchctl_list(text: str) -> Dict[str, bool]:
     return out
 
 
-def _uid() -> int:
-    return os.getuid()
-
-
 def scan_launchd(ctx: Context) -> List[StartupItem]:
-    uid = _uid()
+    uid = ctx.uid
     res = ctx.run(["launchctl", "print-disabled", f"gui/{uid}"], timeout=10, as_user=True)
     disabled_user = _parse_disabled(res.stdout) if res is not None else {}
     res = ctx.run(["launchctl", "print-disabled", "system"], timeout=10, as_user=False)
@@ -185,7 +181,7 @@ def scan(ctx: Context) -> List[StartupItem]:
 
 def plan(item: StartupItem, action: str, ctx: Context) -> List[List[str]]:
     """Commands for ``action`` in (disable, enable, remove). Sudo is prefixed for system items."""
-    uid = _uid()
+    uid = ctx.uid
     if item.kind == "login-item":
         if action != "remove":
             return []

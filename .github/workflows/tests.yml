@@ -22,3 +22,12 @@ jobs:
           ./msc smart --dry-run
           ./msc status --once
           ./msc optimize --list
+          ./msc uninstall --list | head -20
+          ./msc lens ~ --list --top 15
+      - name: macOS diagnostics (real system output, for review)
+        if: runner.os == 'macOS'
+        run: |
+          python -m unittest tests.test_macos_live -v
+          time ./msc scan --report --min-size 0 --no-projects --hog-min 200MB
+          ./msc clean --dry-run --tier caution
+          ./msc uninstall --dry-run "$(./msc uninstall --list | head -1 | cut -c 23-54 | xargs)" || true

@@ -44,8 +44,28 @@ ALLOWED_EXCEPTIONS = [
 ]
 
 
+# Extra places allowed only when moving to the Trash (reversible): what an uninstaller removes.
+TRASH_EXCEPTIONS = [
+    "/Applications/*.app", "/Applications/*/*.app", "~/Applications/*.app", "~/Applications/*/*.app",
+    "~/Library/Preferences/*.plist", "~/Library/Preferences/ByHost/*.plist",
+    "/Library/LaunchAgents/*.plist", "/Library/LaunchDaemons/*.plist", "/Library/PrivilegedHelperTools/*",
+    "/Library/Application Support/*", "/Library/Preferences/*.plist",
+]
+
+
 class UnsafePath(Exception):
     pass
+
+
+def _is_apple_app(p: str) -> bool:
+    if not p.endswith(".app"):
+        return False
+    try:
+        import plistlib
+        with open(os.path.join(p, "Contents", "Info.plist"), "rb") as fh:
+            return str(plistlib.load(fh).get("CFBundleIdentifier", "")).lower().startswith("com.apple.")
+    except Exception:  # noqa: BLE001 - unreadable: not provably Apple
+        return False
 
 
 def _match_components(path: str, pattern: str) -> bool:
@@ -66,8 +86,12 @@ def _within(child: str, parent: str) -> bool:
     return child == parent or child.startswith(parent + "/") or parent == "/"
 
 
-def check(path: str, ctx: Context) -> str:
-    """Return the normalized path if it is OK to delete, else raise UnsafePath."""
+def check(path: str, ctx: Context, trash: bool = False) -> str:
+    """Return the normalized path if it is OK to delete, else raise UnsafePath.
+
+    ``trash=True`` (moving to the Trash, which is reversible) additionally allows app bundles and
+    an app's own settings files, but never anything from Apple.
+    """
     p = _norm(path)
     home = os.path.realpath(ctx.home)
 
@@ -83,6 +107,13 @@ def check(path: str, ctx: Context) -> str:
     for pattern in ALLOWED_EXCEPTIONS:
         if _match_components(p, ctx.path(pattern)):
             return p
+    if trash:
+        name = os.path.basename(p).lower()
+        for pattern in TRASH_EXCEPTIONS:
+            if _match_components(p, ctx.path(pattern)):
+                if name.startswith(("com.apple.", "apple", ".globalpreferences")) or _is_apple_app(p):
+                    raise UnsafePath(f"refusing to remove Apple component {p}")
+                return p
 
     never = [os.path.join(home, r) for r in NEVER_INSIDE_HOME] + [absolute(a) for a in NEVER_INSIDE_ABS]
     for n in never:

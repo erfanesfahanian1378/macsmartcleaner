@@ -1,10 +1,11 @@
 """One-click maintenance tasks, each explained, each using Apple's own tools."""
 from __future__ import annotations
 
+import glob
 import os
 import time
-from dataclasses import dataclass
-from typing import List, Sequence, Tuple
+from dataclasses import dataclass, field
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import ui
 from .context import Context
@@ -22,6 +23,41 @@ class Task:
     needs_root: bool = False
     recommended: bool = True
     note: str = ""
+    # custom logic instead of fixed commands: (ctx) -> (ok, message)
+    handler: Optional[Callable[[Context], Tuple[bool, str]]] = field(default=None, compare=False, hash=False)
+    available: Optional[Callable[[Context], bool]] = field(default=None, compare=False, hash=False)
+
+
+def _mail_indexes(ctx: Context) -> List[str]:
+    return sorted(glob.glob(os.path.join(ctx.path("~/Library/Mail"), "V*", "MailData", "Envelope Index")))
+
+
+def _speed_up_mail(ctx: Context) -> Tuple[bool, str]:
+    res = ctx.run(["pgrep", "-x", "Mail"], timeout=5, as_user=False)
+    if res is not None and res.returncode == 0:
+        return False, "Quit Mail first, then run this again."
+    dbs = _mail_indexes(ctx)
+    if not dbs:
+        return False, "No Mail index found (or Terminal lacks Full Disk Access)."
+    db = dbs[-1]
+    before = os.path.getsize(db)
+    res = ctx.run(["sqlite3", db, "VACUUM;"], timeout=1800, as_user=True)
+    if res is None or res.returncode != 0:
+        return False, (res.stderr.strip() if res is not None and res.stderr else "sqlite3 failed")
+    after = os.path.getsize(db)
+    return True, f"Mail index {before / 1e6:.0f} MB -> {after / 1e6:.0f} MB"
+
+
+def _free_purgeable(ctx: Context) -> Tuple[bool, str]:
+    import shutil as _sh
+    before = _sh.disk_usage(ctx.home).free
+    sudo = [] if ctx.is_root else ["sudo", "-n"]
+    res = ctx.run(sudo + ["tmutil", "thinlocalsnapshots", "/", "999999999999999", "4"], timeout=1800, as_user=False)
+    if res is None or res.returncode != 0:
+        return False, (res.stderr.strip().splitlines()[-1] if res is not None and res.stderr.strip() else "tmutil failed")
+    after = _sh.disk_usage(ctx.home).free
+    gained = max(0, after - before)
+    return True, f"{gained / 1e9:.1f} GB released right away (macOS may keep releasing for a minute)"
 
 
 TASKS: List[Task] = [
@@ -32,6 +68,14 @@ TASKS: List[Task] = [
          "Drops cached memory that nothing is using right now, so apps that need RAM get it immediately.",
          (("purge",),), needs_root=True,
          note="The Mac may feel slightly slower for a minute while caches refill."),
+    Task("purgeable", "Free up purgeable space",
+         "Makes macOS release purgeable space now (local Time Machine snapshots and other purgeable data) "
+         "instead of waiting until the disk is almost full.",
+         (("tmutil",),), needs_root=True, handler=_free_purgeable),
+    Task("mail", "Speed up Mail",
+         "Compacts Mail's message index, which grows and slows down search and scrolling over the years.",
+         (("sqlite3",),), recommended=False, handler=_speed_up_mail,
+         available=lambda ctx: bool(_mail_indexes(ctx)), note="Mail must be closed."),
     Task("maintenance", "Run macOS maintenance scripts",
          "Runs the daily/weekly/monthly housekeeping (log rotation, temp cleanup) macOS schedules at night.",
          (("periodic", "daily", "weekly", "monthly"),), needs_root=True),
@@ -60,7 +104,8 @@ TASKS: List[Task] = [
 
 
 def available(ctx: Context) -> List[Task]:
-    return [t for t in TASKS if all(ctx.which(c[0]) for c in t.commands)]
+    return [t for t in TASKS if all(ctx.which(c[0]) for c in t.commands)
+            and (t.available is None or t.available(ctx))]
 
 
 @dataclass
@@ -83,6 +128,11 @@ def run_tasks(tasks: Sequence[Task], ctx: Context, quiet: bool = False) -> List[
         msg = ""
         ok = True
         with ui.Spinner(task.name, quiet=quiet) as spin:
+            if task.handler is not None:
+                ok, msg = task.handler(ctx)
+                spin.done(ok, msg)
+                results.append(Result(task, ok, time.time() - t0, "" if ok else msg))
+                continue
             for cmd in task.commands:
                 full = list(cmd)
                 if task.needs_root and not ctx.is_root:

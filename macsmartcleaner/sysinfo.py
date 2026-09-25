@@ -79,6 +79,8 @@ def parse_ioreg_gpu(text: str) -> Dict[str, Optional[float]]:
         m = re.search(r'"' + re.escape(key) + r'"\s*=\s*(\d+)', text)
         return float(m.group(1)) if m else None
     util = num("Device Utilization %")
+    if util is None:  # Intel / AMD GPUs on Intel Macs use a different key
+        util = num("GPU Activity(%)")
     return {
         "util": None if util is None else util / 100,
         "renderer": (num("Renderer Utilization %") or 0) / 100 if util is not None else None,

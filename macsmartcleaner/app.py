@@ -12,7 +12,7 @@ import sys
 import time
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from . import optimize, startup, sysinfo, ui
+from . import apptools, optimize, startup, sysinfo, ui
 from .context import Context
 from .sizes import human
 from .tuikit import (CYAN, GREEN, GREY, INVERT, MAGENTA, RED, YELLOW, Canvas, pct, wrap)
@@ -26,6 +26,8 @@ LOGO = [
 MENU = [
     ("smart", "✦", "Smart Clean", "Clear caches & junk, skipping open apps"),
     ("scan", "◎", "Deep Scan", "See everything using space, pick what goes"),
+    ("lens", "◧", "Space Lens", "Browse any folder by size, drill down, trash"),
+    ("uninstall", "⌫", "Uninstaller", "Remove apps with all their leftovers"),
     ("startup", "↑", "Startup Items", "Apps & helpers that launch automatically"),
     ("optimize", "⚙", "Optimize", "DNS, memory, Finder/Dock, Spotlight & more"),
     ("status", "◔", "System Status", "Live CPU, GPU, memory, disk, network"),
@@ -46,7 +48,8 @@ class Menu(Canvas):
         s = self.scr
         s.erase()
         h, w = self.size()
-        top = max(1, (h - (len(MENU) * 2 + 12)) // 2)
+        step = 2 if h >= len(MENU) * 2 + 12 else 1  # compact menu on short terminals
+        top = max(1, (h - (len(MENU) * step + 12)) // 2)
         # animated logo: gradient + a light sweeping across
         for i, line in enumerate(LOGO):
             x0 = (w - 34) // 2
@@ -72,7 +75,7 @@ class Menu(Canvas):
                 self.put(y, x0 + 3, f"{icon}  {name}", curses.A_BOLD)
                 self.put(y, x0 + 22, desc[: box_w - 27], curses.color_pair(GREY))
             self.put(y, x0 + box_w - 3, str(i + 1) if i < len(MENU) - 1 else "q", curses.color_pair(GREY))
-            y += 2
+            y += step
 
         # live mini status
         snap = self.mon.snapshot()
@@ -93,7 +96,7 @@ class Menu(Canvas):
             self.bar(y, x + 5, frac, bw, heat=True)
             self.put(y, x + 6 + bw, txt, curses.A_BOLD)
             x += seg
-        self.footer([("↑↓", "choose"), ("enter", "open"), ("1-5", "jump"), ("q", "quit")])
+        self.footer([("↑↓", "choose"), ("enter", "open"), (f"1-{len(MENU) - 1}", "jump"), ("q", "quit")])
         s.refresh()
 
     def loop(self, scr) -> str:
@@ -123,10 +126,18 @@ class Menu(Canvas):
 # =========================================================================== status dashboard
 
 class StatusScreen(Canvas):
+    # quitting these would log you out, freeze the screen or crash macOS
+    PROTECTED = {"kernel_task", "launchd", "WindowServer", "loginwindow", "Finder", "Dock", "SystemUIServer",
+                 "mds", "mds_stores", "coreaudiod", "hidd", "logd", "configd", "opendirectoryd", "powerd",
+                 "syslogd", "UserEventAgent", "cfprefsd", "distnoted", "securityd", "trustd", "notifyd"}
+
     def __init__(self, monitor: sysinfo.Monitor):
         self.mon = monitor
         self.frame = 0
         self.sort = "cpu"
+        self.sel = 0          # highlighted row in the process list
+        self.shown: list = []  # processes currently on screen
+        self.flash = ""
 
     def section(self, y: int, x: int, w: int, title: str, right: str = "") -> None:
         self.put(y, x, f"▌{title}", self.grad_attr(0.1) | curses.A_BOLD)
@@ -254,16 +265,24 @@ class StatusScreen(Canvas):
         rows = h - py - 3
         if rows >= 3:
             key = "cpu" if self.sort == "cpu" else "rss"
-            procs = sorted(snap.procs, key=lambda p: p[key], reverse=True)[:rows - 1]  # type: ignore[index]
-            self.section(py, 1, w - 2, f" Top processes by {'CPU' if self.sort == 'cpu' else 'memory'}",
-                         "c: sort by CPU · m: sort by memory")
+            procs = sorted(snap.procs, key=lambda p: p[key], reverse=True)[:rows - 2]  # type: ignore[index]
+            self.shown = procs
+            self.sel = min(self.sel, max(0, len(procs) - 1))
+            self.section(py, 1, w - 2, f" Heaviest processes by {'CPU' if self.sort == 'cpu' else 'memory'}",
+                         "c/m: sort · k: quit · K: force quit")
             self.put(py + 1, 3, f"{'PID':>7}  {'CPU':>6}  {'MEMORY':>9}  NAME", curses.color_pair(GREY))
-            for i, p in enumerate(procs[: rows - 2]):
+            for i, p in enumerate(procs):
                 cpu = float(p["cpu"])  # type: ignore[arg-type]
-                self.put(py + 2 + i, 3, f"{p['pid']:>7}  ", curses.color_pair(GREY))
-                self.put(py + 2 + i, 12, f"{cpu:5.1f}%", self.heat_attr(min(1, cpu / 100)) | curses.A_BOLD)
-                self.put(py + 2 + i, 20, f"{human(int(p['rss'])):>9}  {p['name']}"[: w - 22])  # type: ignore[arg-type]
-        self.footer([("c", "sort CPU"), ("m", "sort memory"), ("q", "back")])
+                y = py + 2 + i
+                base = curses.A_REVERSE if i == self.sel else 0
+                if i == self.sel:
+                    self.put(y, 1, " " * (w - 2), curses.A_REVERSE)
+                self.put(y, 1, "▸" if i == self.sel else " ", base | curses.A_BOLD)
+                self.put(y, 3, f"{p['pid']:>7}  ", base | curses.color_pair(GREY))
+                self.put(y, 12, f"{cpu:5.1f}%", base | self.heat_attr(min(1, cpu / 100)) | curses.A_BOLD)
+                self.put(y, 20, f"{human(int(p['rss'])):>9}  {p['name']}"[: w - 22], base)  # type: ignore[arg-type]
+        self.footer([("↑↓", "select"), ("k", "quit app"), ("K", "force quit"), ("c", "sort CPU"),
+                     ("m", "sort memory"), ("q", "back")], self.flash)
         s.refresh()
 
     def loop(self, scr) -> str:
@@ -276,12 +295,40 @@ class StatusScreen(Canvas):
             self.frame += 1
             self.draw()
             k = scr.getch()
+            if k == -1:
+                continue
+            self.flash = ""
             if k in (ord("q"), 27, curses.KEY_LEFT):
                 return "back"
             if k == ord("c"):
                 self.sort = "cpu"
             elif k == ord("m"):
                 self.sort = "mem"
+            elif k in (curses.KEY_DOWN, ord("j")):
+                self.sel += 1
+            elif k == curses.KEY_UP:
+                self.sel = max(0, self.sel - 1)
+            elif k in (ord("k"), ord("K")) and self.shown:
+                self.quit_process(self.shown[self.sel], force=k == ord("K"))
+
+    def quit_process(self, p: dict, force: bool) -> None:
+        import signal
+        name, pid = str(p["name"]), int(p["pid"])
+        if name in self.PROTECTED or pid <= 1 or pid == os.getpid():
+            self.flash = f"{name} is part of macOS - quitting it would log you out or freeze the Mac."
+            return
+        verb = "Force quit" if force else "Quit"
+        if not self.dialog([f"{verb} {name} (PID {pid})?", "",
+                            "Unsaved work in it may be lost." if force else
+                            "It gets the chance to save and close normally."], yes=verb, danger=True):
+            return
+        try:
+            os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+            self.flash = f"✔ Sent {verb.lower()} to {name}."
+        except ProcessLookupError:
+            self.flash = f"{name} already exited."
+        except PermissionError:
+            self.flash = f"{name} belongs to another user or the system - run `sudo msc status` to quit it."
 
 
 # =========================================================================== startup items
@@ -545,6 +592,7 @@ def run(ctx: Context, deep_scan: Callable[[], int], smart_clean: Callable[[], in
     monitor = sysinfo.Monitor(ctx.home).start()
     menu = Menu(ctx, monitor)
     startup_screen: Optional[StartupScreen] = None
+    lens: Optional["apptools.LensScreen"] = None
     try:
         while True:
             action = curses.wrapper(menu.loop)
@@ -557,6 +605,18 @@ def run(ctx: Context, deep_scan: Callable[[], int], smart_clean: Callable[[], in
                 deep_scan()
             elif action == "status":
                 curses.wrapper(StatusScreen(monitor).loop)
+            elif action == "lens":
+                lens = lens or apptools.LensScreen(ctx)
+                curses.wrapper(lens.loop)
+            elif action == "uninstall":
+                un = apptools.UninstallScreen(ctx)
+                while curses.wrapper(un.loop) == "uninstall":
+                    chosen = un.chosen()
+                    apptools.run_uninstall(chosen, ctx)
+                    gone = {a.path for a in chosen if not os.path.exists(a.path)}
+                    un.apps = [a for a in un.apps if a.path not in gone]
+                    un.selected -= gone
+                    _pause("Press Enter to go back to the app list")
             elif action == "startup":
                 startup_screen = startup_screen or StartupScreen(ctx)
                 while curses.wrapper(startup_screen.loop) == "sudo":

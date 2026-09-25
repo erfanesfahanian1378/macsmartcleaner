@@ -64,7 +64,7 @@ def _items_from(ctx: Context, findings: Sequence[Finding], projects: Sequence[Fi
         if f.newest_mtime:
             details.append(f"Last modified {int(ctx.days_since(f.newest_mtime))} days ago · {f.files:,} files")
         if f.rule.needs_root and not ctx.is_root:
-            details.append("Needs admin rights: run `sudo msc` to clean this one.")
+            details.append("System item: you will be asked for your Mac password when cleaning.")
         items.append(Item(0, f.size, f.size_known, f.rule.name, path, tag, details, finding=f,
                           selected=f.cleanable and f.rule.safety == Safety.SAFE and not
                           (f.rule.needs_root and not ctx.is_root)))
@@ -298,54 +298,70 @@ def perform_cleanup(ctx: Context, items: List[Item]) -> Tuple[int, List[str]]:
     findings = [i.finding for i in sel if i.finding is not None]
     hogs = [i for i in sel if i.hog is not None]
     problems: List[str] = []
+    admin = cleaner.root_findings(findings, ctx)
+    needs_password = admin or any(f.rule.command_needs_root for f in findings)
 
-    if any(f.rule.command_needs_root for f in findings) and not ctx.is_root:
-        print(f"\n  {ui.BOLD}Time Machine snapshots need your Mac password:{ui.RESET}")
-        rc = os.system("sudo -v")  # interactive prompt must own the terminal
-        if rc != 0:
-            findings = [f for f in findings if not f.rule.command_needs_root]
-            problems.append("Time Machine snapshots skipped (no password given).")
+    if needs_password and not ctx.is_root:
+        print(f"\n  {ui.BOLD}Some selected items are system files and need your Mac password:{ui.RESET}")
+        if os.system("sudo -v") != 0:  # the prompt must own the terminal, so ask before the animation
+            findings = [f for f in findings if not f.rule.command_needs_root and f not in admin]
+            problems.append("System items skipped (no password given).")
+            admin = []
 
     if sys.stdout.isatty():
         sys.stdout.write("\033[H\033[2J")  # fresh screen for the cleanup run
     ui.banner("cleaning")
     free_before = shutil.disk_usage(ctx.home).free
     stages = [("clean", 90), ("trash", 10)] if hogs else [("clean", 100)]
+    trashed = 0
     rep = ui.make_reporter(stages, counter_label="freed")
     with rep:
-        outcomes = cleaner.execute(findings, ctx, dry_run=False, reporter=rep)
+        outcomes = cleaner.execute([f for f in findings if f not in admin], ctx, dry_run=False, reporter=rep)
         if hogs:
-            rep.begin("trash", "Moving folders to the Trash", total=len(hogs))
+            rep.begin("trash", "Moving items to the Trash", total=len(hogs))
             for item in hogs:
                 rep.current(item.hog.path)  # type: ignore[union-attr]
                 try:
                     cleaner.move_to_trash([item.hog.path], ctx)  # type: ignore[union-attr]
+                    trashed += item.size
                 except Exception as e:  # noqa: BLE001 - report and continue
                     problems.append(f"{item.path}: {e}")
                     item.selected = False
                 rep.step()
-            rep.end(f"{len(hogs)} folder(s) moved - empty the Trash to free the space")
+            rep.end(f"{len(hogs)} item(s) moved to the Trash")
+    admin_ok = False
+    if admin:
+        print(f"\n  {ui.BOLD}Cleaning system items…{ui.RESET}")
+        admin_ok = cleaner.clean_as_admin(admin, ctx, quiet=True)
+        if not admin_ok:
+            problems.append("System items could not be cleaned (admin step failed).")
     freed = sum(o.freed for o in outcomes)
+    trashed += sum(o.trashed for o in outcomes)
     for o in outcomes:
         problems.extend(f"{o.finding.rule.name}: {m}" for m in o.messages)
     free_after = shutil.disk_usage(ctx.home).free
 
     # update the list: drop what was cleaned, keep what failed
-    ok_ids = {id(o.finding) for o in outcomes if o.ok and not o.messages}
+    done = {id(o.finding) for o in outcomes if o.ok and not o.messages}
+    if admin_ok:
+        done |= {id(f) for f in admin}
     for item in list(items):
         if not item.selected:
             continue
-        if item.hog is not None or (item.finding is not None and id(item.finding) in ok_ids):
+        if item.hog is not None or (item.finding is not None and id(item.finding) in done):
             items.remove(item)
         else:
             item.selected = False
             for o in outcomes:
                 if o.finding is item.finding:
-                    item.size = max(0, item.size - o.freed)
+                    item.size = max(0, item.size - o.freed - o.trashed)
 
     color = ui.color_enabled(sys.stdout)
     g, b, r, d = (ui.GREEN, ui.BOLD, ui.RESET, ui.DIM) if color else ("", "", "", "")
-    print(f"\n  {g}{b}✨ Freed {human(freed)}{r}   free space {human(free_before)} → {b}{human(free_after)}{r}")
+    extra = " (+ system items)" if admin_ok else ""
+    print(f"\n  {g}{b}✨ Freed {human(freed)}{extra}{r}   free space {human(free_before)} → {b}{human(free_after)}{r}")
+    if trashed:
+        print(f"  {b}{human(trashed)}{r} moved to the Trash - empty the Trash to free that too (you can still undo it).")
     if free_after - free_before < freed * 0.8:
         print(f"  {d}macOS can take a minute to show space from snapshots and purgeable files.{r}")
     if problems:

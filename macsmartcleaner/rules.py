@@ -20,6 +20,7 @@ import enum
 import glob
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Tuple
 
@@ -62,6 +63,10 @@ class Rule:
     needs_root: bool = False
     quit_apps: Tuple[str, ...] = ()
     trash: bool = False  # move to the Trash instead of deleting (reversible)
+    keep_dirs: bool = False  # empty sub-folders instead of removing them (log folders apps expect)
+    min_size: int = 0  # only worth offering above this size (e.g. rebuilding Spotlight)
+    probe_async: bool = False  # slow probe (simctl): run in the background while the scan continues
+    handler: Optional[Callable[[Context, bool], Tuple[bool, str]]] = field(default=None, compare=False, hash=False)
     why: str = ""
     impact: str = ""
     probe: Optional[Callable[[Context], ProbeResult]] = field(default=None, compare=False, hash=False)
@@ -79,6 +84,31 @@ def _probe_tm_snapshots(ctx: Context) -> ProbeResult:
         present=bool(snaps),
         note=f"{len(snaps)} local snapshot(s) - size hidden by APFS, often tens of GB",
     )
+
+
+def _tm_snapshot_count(ctx: Context) -> int:
+    res = ctx.run(["tmutil", "listlocalsnapshots", "/"], timeout=60, as_user=False)
+    if res is None or res.returncode != 0:
+        return -1
+    return sum(1 for ln in res.stdout.splitlines() if "com.apple.TimeMachine" in ln)
+
+
+def _delete_tm_snapshots(ctx: Context, dry_run: bool) -> Tuple[bool, str]:
+    """Delete all local snapshots: one call on macOS 12+, date by date on older systems."""
+    before = _tm_snapshot_count(ctx)
+    sudo = [] if ctx.is_root else ["sudo", "-n"]
+    res = ctx.run(sudo + ["tmutil", "deletelocalsnapshots", "/"], timeout=1800, as_user=False)
+    if res is None or res.returncode != 0 or _tm_snapshot_count(ctx) > 0:
+        dates = ctx.run(["tmutil", "listlocalsnapshotdates", "/"], timeout=60, as_user=False)
+        for line in (dates.stdout.splitlines() if dates is not None else []):
+            if re.match(r"^\d{4}-\d{2}-\d{2}-\d{6}$", line.strip()):
+                ctx.run(sudo + ["tmutil", "deletelocalsnapshots", line.strip()], timeout=600, as_user=False)
+    after = _tm_snapshot_count(ctx)
+    if after == 0:
+        return True, f"deleted {before} local snapshot(s); macOS releases the space within a few minutes"
+    if after < 0:
+        return False, "could not read snapshots (tmutil failed)"
+    return False, f"{after} snapshot(s) could not be deleted (one may be in use by a running backup)"
 
 
 def _probe_unavailable_sims(ctx: Context) -> ProbeResult:
@@ -132,8 +162,27 @@ def _probe_leftovers(ctx: Context) -> ProbeResult:
     return ProbeResult(roots=roots, note=f"{len(roots)} folder(s) from apps that are no longer installed")
 
 
+def _probe_disk_images(ctx: Context) -> ProbeResult:
+    """Disk images in the home folder (not Downloads - that has its own rule) via Spotlight, else a shallow look."""
+    roots: List[str] = []
+    home = ctx.home
+    res = ctx.run(["mdfind", "-onlyin", home, "kMDItemContentType == 'com.apple.disk-image-udif' || "
+                   "kMDItemFSName == '*.dmg'"], timeout=30, as_user=True) if ctx.root == "/" else None
+    if res is not None and res.returncode == 0:
+        roots = [p for p in res.stdout.splitlines() if p.lower().endswith((".dmg", ".sparseimage"))]
+    else:
+        for folder in ("Desktop", "Documents", "Movies", "Music", "Pictures", "Public"):
+            for depth in ("*", "*/*"):
+                roots += glob.glob(os.path.join(home, folder, depth + ".dmg"))
+    skip = (os.path.join(home, "Downloads") + os.sep, os.path.join(home, "Library") + os.sep,
+            os.path.join(home, ".Trash") + os.sep)
+    roots = [p for p in dict.fromkeys(roots)
+             if not p.startswith(skip) and os.path.isfile(p) and ".app/" not in p and ".photoslibrary/" not in p]
+    return ProbeResult(roots=roots)
+
+
 def _probe_volume_trash(ctx: Context) -> ProbeResult:
-    roots = glob.glob(os.path.join(ctx.path("/Volumes"), "*", ".Trashes", str(os.getuid())))
+    roots = glob.glob(os.path.join(ctx.path("/Volumes"), "*", ".Trashes", str(ctx.uid)))
     return ProbeResult(roots=[r for r in roots if not os.path.islink(os.path.dirname(os.path.dirname(r)))])
 
 
@@ -164,15 +213,15 @@ BUILTIN_RULES: List[Rule] = [
     # ---------------------------------------------------------------- system
     R("tm-snapshots", "Time Machine local snapshots", SYS, C, CMD,
       commands=(("tmutil", "deletelocalsnapshots", "/"),), command_needs_root=True,
-      probe=_probe_tm_snapshots,
+      probe=_probe_tm_snapshots, handler=_delete_tm_snapshots,
       why="macOS keeps hourly APFS snapshots on the internal disk while your backup drive is away. "
           "They are counted as System Data and are the #1 cause of a huge System Data number.",
       impact="Removes local restore points only. Backups on your Time Machine drive are untouched."),
-    R("user-logs", "User logs & crash reports", APPS, S, CON,
+    R("user-logs", "User logs & crash reports", APPS, S, CON, keep_dirs=True,
       paths=("~/Library/Logs",), exclude=("macsmartcleaner*",),
       why="Application logs, crash and diagnostic reports.",
       impact="None; apps create new logs as needed."),
-    R("system-logs", "System logs & diagnostic reports", APPS, S, CON,
+    R("system-logs", "System logs & diagnostic reports", APPS, S, CON, keep_dirs=True, min_age_days=1,
       paths=("/Library/Logs", "/private/var/log/DiagnosticMessages"),
       needs_root=True, why="System-wide crash and diagnostic reports.", impact="None."),
     R("system-caches", "System-wide caches", APPS, C, CON,
@@ -252,7 +301,7 @@ BUILTIN_RULES: List[Rule] = [
       paths=("~/Library/Developer/CoreSimulator/Caches",),
       why="dyld shared caches built for simulator runtimes.", impact="Rebuilt on next simulator boot."),
     R("simulator-unavailable", "Orphaned simulators", XCODE, S, CMD,
-      commands=(("xcrun", "simctl", "delete", "unavailable"),), probe=_probe_unavailable_sims,
+      commands=(("xcrun", "simctl", "delete", "unavailable"),), probe=_probe_unavailable_sims, probe_async=True,
       why="Simulator devices whose iOS runtime is no longer installed - they can never boot again.",
       impact="None."),
     R("simulator-devices", "All simulator devices", XCODE, V, REP,
@@ -400,18 +449,19 @@ BUILTIN_RULES: List[Rule] = [
       impact="Rebuilt by Steam. Games are not touched."),
 
     # ---------------------------------------------------------------- system level (sudo)
-    R("spotlight-index", "Spotlight index (.Spotlight-V100)", SYS, C, CMD,
+    R("spotlight-index", "Spotlight index (.Spotlight-V100)", SYS, V, CMD,
       paths=("/System/Volumes/Data/.Spotlight-V100",), commands=(("mdutil", "-E", "/"),),
-      command_needs_root=True, needs_root=False,
+      command_needs_root=True, needs_root=False, min_size=5_000_000_000,
       why="Spotlight's search index. It can bloat to tens of GB after big file moves or a corrupted index. "
           "Never delete this folder by hand: that can break Spotlight and Mail search.",
       impact="Erases and rebuilds the index (the right way). Spotlight search is incomplete and the Mac is "
              "busy while it re-indexes, from minutes to hours."),
     R("unified-logs", "System diagnostic logs (/var/db/diagnostics)", SYS, C, CMD,
       paths=("/private/var/db/diagnostics",), commands=(("log", "erase", "--all"),), command_needs_root=True,
+      min_size=1_000_000_000,
       why="macOS unified logging store. Usually capped, but logging profiles or crashes can grow it to many GB.",
       impact="Old system logs are gone (only matters when troubleshooting). macOS keeps logging normally."),
-    R("rotated-logs", "Old rotated system logs", APPS, S, DEL, needs_root=True,
+    R("rotated-logs", "Old rotated system logs", APPS, S, DEL, needs_root=True, min_age_days=2,
       paths=("/private/var/log/*.gz", "/private/var/log/*.bz2", "/private/var/log/*/*.gz",
              "/private/var/log/*/*.bz2", "/private/var/log/asl/*.asl"),
       why="Compressed, already-rotated system log archives.", impact="None."),
@@ -485,6 +535,18 @@ BUILTIN_RULES: List[Rule] = [
     R("rustup-toolchains", "Rust toolchains", PKG, V, REP, paths=("~/.rustup/toolchains",),
       why="Every Rust toolchain you installed (~1 GB each).",
       impact="Use `rustup toolchain list` and `rustup toolchain uninstall <name>`."),
+    R("unused-disk-images", "Unused disk images (.dmg) in your folders", SYS, C, DEL, trash=True,
+      probe=_probe_disk_images, min_age_days=30,
+      why="Disk images anywhere in your home folder that haven't been opened for a month "
+          "(installers you already used, old backups).",
+      impact="Moved to the Trash. Open one again before emptying the Trash if you're unsure."),
+    R("deleted-users", "Deleted user accounts", SYS, V, DEL, needs_root=True, paths=("/Users/Deleted Users/*.dmg",),
+      why="Home folders of deleted accounts that macOS kept as disk images.",
+      impact="That account's files are gone for good."),
+    R("unreal-zen", "Unreal Engine Zen cache", GAME, C, CON,
+      paths=("~/Library/Application Support/Epic/Zen/Data",),
+      why="Unreal Engine 5.4+ local shared cache server data (cooked assets, shaders).",
+      impact="Rebuilt when you open projects (first open is slower)."),
     R("gem-cache", "Ruby gem cache", PKG, S, CON, paths=("~/.gem/ruby/*/cache", "~/.gem/specs"),
       why="Downloaded .gem files.", impact="Re-downloaded when installing gems."),
 ]

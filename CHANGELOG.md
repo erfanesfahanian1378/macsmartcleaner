@@ -2,6 +2,26 @@
 
 ## Unreleased
 
+**Audit against CleanMyMac X (verified on a real Mac in CI)**
+- **Uninstaller** (`msc uninstall`): apps with size and last-opened date. Removes an app with all its
+  files (matched by bundle id) to the Trash; quits it first; admin items with your password
+- **Space Lens** (`msc lens`): browse any folder or the whole disk by size, drill down, trash items
+- **Optimize**: free up purgeable space, speed up Mail (compact its index)
+- **System Status**: select a heavy process and quit / force quit it (core processes protected)
+- **System items now ask for your password** and are cleaned in a separate admin step for exactly the
+  items you picked, instead of failing with "needs sudo"
+- New rules: unused disk images anywhere in your folders (Trash), Deleted Users, Unreal Zen cache
+- Smart Clean also cleans the per-user system cache, shows real app names for skipped apps, and offers
+  to empty the Trash
+- Fixes found on a real Mac: the Time Machine note showed another item's text; today's live system
+  log could be deleted (rotated logs now need to be 2+ days old); the first scan could sit 30 s in
+  "Checking tools" (slow checks now run in the background)
+- Fixes found in review: log folders are emptied instead of deleted; items moved to the Trash are no
+  longer reported as "freed"; files created under sudo are owned by you; the right user id under
+  sudo; Trash name collisions keep the file extension; already-removed paths no longer report errors;
+  the Trash is emptied before anything new is moved into it; Spotlight is only offered for rebuild
+  when the index is 5 GB+ and unified logs above 1 GB; Intel/AMD GPU utilisation
+
 - **Faster scans**: folders are measured by a pool of helper processes in parallel (2x faster even on a
   4-core machine with warm caches, more on cold disks), and a folder is never walked twice in one scan.
   Results are identical to the sequential walker, including hard links

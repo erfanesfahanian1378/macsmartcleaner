@@ -40,9 +40,12 @@ def select(findings: Iterable[Finding], tier: str = "safe", only: Sequence[str] 
 @dataclass
 class Outcome:
     finding: Finding
-    freed: int = 0
+    freed: int = 0     # bytes actually released
+    trashed: int = 0   # bytes moved to the Trash (released once the Trash is emptied)
     ok: bool = True
-    messages: List[str] = field(default_factory=list)
+    skipped_root: bool = False
+    messages: List[str] = field(default_factory=list)  # problems
+    notes: List[str] = field(default_factory=list)     # informational (dry-run preview, "moved to Trash")
 
 
 def _make_writable_and_retry(func, path, _exc):
@@ -64,6 +67,19 @@ def _remove(path: str) -> None:
         os.unlink(path)
 
 
+def _remove_files_only(path: str) -> None:
+    """Delete every file below ``path`` but keep the folders (apps expect their log folders)."""
+    if not os.path.isdir(path) or os.path.islink(path):
+        os.unlink(path)
+        return
+    for dirpath, dirnames, filenames in os.walk(path):
+        for name in filenames + [d for d in dirnames if os.path.islink(os.path.join(dirpath, d))]:
+            try:
+                os.unlink(os.path.join(dirpath, name))
+            except OSError:
+                pass
+
+
 def _format_cmd(cmd: Sequence[str], root: Optional[str]) -> List[str]:
     return [c.replace("{root}", root or "") for c in cmd]
 
@@ -77,10 +93,16 @@ def running_apps(names: Sequence[str], ctx: Context) -> List[str]:
     return out
 
 
+def _order(findings: Sequence[Finding]) -> List[Finding]:
+    # Empty the Trash before anything else is moved into it, so "reversible" items stay reversible.
+    return sorted(findings, key=lambda f: 0 if f.rule.id == "trash" else 1)
+
+
 def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
             log: Optional[Callable[[str], None]] = None, reporter: Reporter = NULL) -> List[Outcome]:
     say = log or (lambda _m: None)
     outcomes: List[Outcome] = []
+    findings = _order(findings)
     units = sum(len(f.rule.commands) if f.rule.action == Action.COMMAND else len(f.targets) or 1
                 for f in findings)
     reporter.begin("clean", "Previewing cleanup" if dry_run else "Cleaning", total=units)
@@ -88,10 +110,21 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
         o = Outcome(f)
         outcomes.append(o)
         rule = f.rule
-        if rule.needs_root and not ctx.is_root:
+        if rule.needs_root and not ctx.is_root and not dry_run:
             o.ok = False
-            o.messages.append("needs sudo - rerun with `sudo msc clean ...` to include it")
+            o.skipped_root = True
+            o.messages.append("needs your admin password")
             reporter.step(max(len(f.targets), 1))
+            continue
+
+        if rule.handler is not None:
+            reporter.step(current=rule.name)
+            if dry_run:
+                o.notes.append("would delete them with tmutil" if rule.id == "tm-snapshots" else "would run")
+            else:
+                o.ok, msg = rule.handler(ctx, dry_run)
+                if msg:
+                    (o.notes if o.ok else o.messages).append(msg)
             continue
 
         if rule.action == Action.COMMAND:
@@ -101,7 +134,7 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
                     full = ["sudo"] + full
                 reporter.step(current="running " + " ".join(full))
                 if dry_run:
-                    o.messages.append("would run: " + " ".join(full))
+                    o.notes.append("would run: " + " ".join(full))
                     continue
                 say(f"running: {' '.join(full)}")
                 res = ctx.run(full, as_user=not rule.command_needs_root)
@@ -123,31 +156,36 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
 
         for t in f.targets:
             reporter.current(t.path)
+            if not os.path.lexists(t.path):
+                reporter.step()  # already gone (e.g. removed together with its parent folder)
+                continue
             try:
                 safe_path = safety.check(t.path, ctx)
             except safety.UnsafePath as e:
                 o.ok = False
                 o.messages.append(str(e))
+                reporter.step()
                 continue
             if dry_run:
-                o.freed += t.usage.bytes
+                if rule.trash:
+                    o.trashed += t.usage.bytes
+                else:
+                    o.freed += t.usage.bytes
                 reporter.step()
                 reporter.count(t.usage.files, t.usage.bytes)
                 continue
             if rule.trash:
                 try:
                     move_to_trash([safe_path], ctx)
-                    o.freed += t.usage.bytes
-                    o.messages.append("moved to the Trash - empty it to free the space") if not any(
-                        "Trash" in m for m in o.messages) else None
+                    o.trashed += t.usage.bytes
                 except (OSError, safety.UnsafePath) as e:
                     o.ok = False
-                    o.messages.append(f"{t.path}: {e}")
+                    o.messages.append(f"{t.path}: {getattr(e, 'strerror', None) or e}")
                 reporter.step()
                 reporter.count(t.usage.files, t.usage.bytes)
                 continue
             try:
-                _remove(safe_path)
+                (_remove_files_only if rule.keep_dirs else _remove)(safe_path)
             except OSError as e:
                 o.messages.append(f"{t.path}: {e.strerror or e}")
             remaining = measure(safe_path)
@@ -155,12 +193,46 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
             o.freed += freed
             reporter.step()
             reporter.count(t.usage.files, freed)
-            if remaining.exists and remaining.bytes:
-                o.messages.append(f"partially removed {t.path} (some files are protected or in use)")
-    reporter.end(f"{human(sum(o.freed for o in outcomes))} {'would be freed' if dry_run else 'freed'}")
+            if remaining.exists and remaining.files and remaining.bytes > 64 * 1024:
+                o.messages.append(f"partly removed {t.path} (some files are protected or in use)")
+        if o.trashed and not dry_run:
+            o.notes.append("moved to the Trash - empty the Trash to free the space")
+    total = sum(o.freed for o in outcomes)
+    trashed = sum(o.trashed for o in outcomes)
+    summary = f"{human(total)} {'would be freed' if dry_run else 'freed'}"
+    if trashed:
+        summary += f", {human(trashed)} {'would go' if dry_run else 'moved'} to the Trash"
+    reporter.end(summary)
     if not dry_run:
         _write_history(ctx, outcomes)
     return outcomes
+
+
+def root_findings(findings: Sequence[Finding], ctx: Context) -> List[Finding]:
+    return [f for f in findings if f.rule.needs_root and not ctx.is_root]
+
+
+def clean_as_admin(findings: Sequence[Finding], ctx: Context, quiet: bool = False) -> bool:
+    """Clean root-only findings by re-running msc through sudo for exactly these items.
+
+    Asks for the password once (like any Mac app asking for admin rights). Returns True if it ran.
+    """
+    import subprocess
+    import sys
+
+    items = [f for f in findings if f.root]
+    if not items or not sys.stdin.isatty():
+        return False
+    if subprocess.call(["sudo", "-v"]) != 0:
+        return False
+    pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    cmd = ["sudo", "-n", "env", f"PYTHONPATH={pkg_parent}", sys.executable, "-m", "macsmartcleaner"]
+    if quiet:
+        cmd.append("-q")
+    cmd += ["clean", "--yes", "--tier", "caution", "--only", ",".join(sorted({f.rule.id for f in items}))]
+    for f in items:
+        cmd += ["--root", f.root]  # type: ignore[list-item]
+    return subprocess.call(cmd) == 0
 
 
 def history_path(ctx: Context) -> str:
@@ -170,13 +242,15 @@ def history_path(ctx: Context) -> str:
 def _write_history(ctx: Context, outcomes: Sequence[Outcome]) -> None:
     path = history_path(ctx)
     try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ctx.makedirs(os.path.dirname(path))
         with open(path, "a") as fh:
             for o in outcomes:
                 fh.write(json.dumps({
                     "time": time.strftime("%Y-%m-%dT%H:%M:%S"), "rule": o.finding.rule.id,
-                    "root": o.finding.root, "freed": o.freed, "ok": o.ok, "messages": o.messages,
+                    "root": o.finding.root, "freed": o.freed, "trashed": o.trashed, "ok": o.ok,
+                    "messages": o.messages, "notes": o.notes,
                 }) + "\n")
+        ctx.give_back(path)
     except OSError:
         pass
 
@@ -184,13 +258,17 @@ def _write_history(ctx: Context, outcomes: Sequence[Outcome]) -> None:
 def move_to_trash(paths: Sequence[str], ctx: Context) -> List[str]:
     """Reversible manual removal for things `discover` flagged: move into ~/.Trash."""
     trash = ctx.path("~/.Trash")
-    os.makedirs(trash, exist_ok=True)
+    ctx.makedirs(trash)
     moved = []
     for p in paths:
-        safe_path = safety.check(p, ctx)
-        dest = os.path.join(trash, os.path.basename(safe_path.rstrip("/")))
-        if os.path.lexists(dest):
-            dest += time.strftime(" %H.%M.%S")
+        safe_path = safety.check(p, ctx, trash=True)
+        name = os.path.basename(safe_path.rstrip("/"))
+        dest = os.path.join(trash, name)
+        if os.path.lexists(dest):  # Finder style: "name 12.03.44.ext"
+            stem, ext = os.path.splitext(name)
+            if os.path.isdir(safe_path) and not ext.lower() in (".app", ".bundle", ".plugin", ".savedstate"):
+                stem, ext = name, ""
+            dest = os.path.join(trash, f"{stem} {time.strftime('%H.%M.%S')}{ext}")
         shutil.move(safe_path, dest)
         moved.append(dest)
     return moved

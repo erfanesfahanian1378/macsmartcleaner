@@ -275,10 +275,30 @@ def _worker_main() -> None:
 
 
 def _under(cache: Dict[str, Usage], folder: str) -> Dict[str, Usage]:
+    """Cached totals for folders inside ``folder`` (sorted-key bisect: cheap even for big caches)."""
     if not cache:
         return {}
+    import bisect
+    keys = _sorted_keys(cache)
     prefix = folder + os.sep
-    return {k: v for k, v in cache.items() if k.startswith(prefix)}
+    out = {}
+    i = bisect.bisect_left(keys, prefix)
+    while i < len(keys) and keys[i].startswith(prefix):
+        out[keys[i]] = cache[keys[i]]
+        i += 1
+    return out
+
+
+_keys_memo: Dict[int, Tuple[int, List[str]]] = {}
+
+
+def _sorted_keys(cache: Dict[str, Usage]) -> List[str]:
+    memo = _keys_memo.get(id(cache))
+    if memo is None or memo[0] != len(cache):
+        memo = (len(cache), sorted(cache))
+        _keys_memo.clear()
+        _keys_memo[id(cache)] = memo
+    return memo[1]
 
 
 def measure_many(paths: Iterable[str], workers: Optional[int] = None, on_dir: OnDir = None,

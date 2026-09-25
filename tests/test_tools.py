@@ -66,6 +66,8 @@ class TestParsers(unittest.TestCase):
         self.assertEqual(g["cores"], 19)
         self.assertEqual(g["memory"], 987654321)
         self.assertIsNone(sysinfo.parse_ioreg_gpu("")["util"])
+        amd = '"PerformanceStatistics" = {"GPU Activity(%)"=37,"hardwareWaitTime"=0}'
+        self.assertAlmostEqual(sysinfo.parse_ioreg_gpu(amd)["util"], 0.37)
 
     def test_battery_and_thermal(self):
         b = sysinfo.parse_pmset_batt("Now drawing from 'AC Power'\n -InternalBattery-0 (id=1234)\t87%; charging; "
@@ -159,7 +161,7 @@ class TestSmart(FakeMac):
             "/usr/libexec/logd\n")})
         apps = smart.running_apps(self.ctx)
         self.assertEqual(apps.display, ["Slack"])
-        self.assertEqual(apps.matches("Slack"), "slack")
+        self.assertEqual(apps.matches("Slack"), "Slack")  # display name, not an id
         self.assertIsNone(apps.matches("com.other.app"))
 
     def test_run_yes(self):

@@ -101,19 +101,31 @@ def cmd_clean(args, ctx: Context) -> int:
         if only and not any(o in ("project", "projects", "project:*") for o in only):
             projects = [p for p in projects if p.rule.id in only]
         chosen += [p for p in projects if p.rule.id not in skip]
+    if args.root:  # exact items (used by the admin re-run so it cleans only what you picked)
+        wanted = {os.path.normpath(r) for r in args.root}
+        chosen = [f for f in chosen if f.root and os.path.normpath(f.root) in wanted]
 
     if not chosen:
         print("Nothing to clean for this selection. Run `msc scan` to see everything.")
         return 0
 
+    admin = cleaner.root_findings(chosen, ctx)
     print(f"\nPlan ({'dry run' if args.dry_run else 'will delete'}):\n")
-    total = 0
+    total = trash_total = 0
     for f in chosen:
         where = discover._display(ctx, f.root) if f.root else f.note
-        print(f"  {report.size_str(f):>9}  {f.rule.safety.value:<7}  {f.rule.id:<24} {where}")
-        total += f.size
-    print(f"\n  Total: {human(total)}" + ("  (+ Time Machine snapshots, size unknown)"
-                                         if any(not f.size_known for f in chosen) else ""))
+        tags = (["admin"] if f in admin or (f.rule.command_needs_root and not ctx.is_root) else []) + \
+               (["to Trash"] if f.rule.trash else [])
+        print(f"  {report.size_str(f):>9}  {f.rule.safety.value:<7}  {f.rule.id:<24} {where}"
+              + (report.c(f"  [{', '.join(tags)}]", "2") if tags else ""))
+        if f.rule.trash:
+            trash_total += f.size
+        else:
+            total += f.size
+    print(f"\n  Total: {human(total)}" + (f" + {human(trash_total)} moved to the Trash" if trash_total else "")
+          + ("  (+ Time Machine snapshots, size unknown)" if any(not f.size_known for f in chosen) else ""))
+    if admin and not args.dry_run:
+        print(report.c(f"  {len(admin)} system item(s) need your Mac password - you'll be asked once.", "2"))
 
     busy = cleaner.running_apps(sorted({a for f in chosen for a in f.rule.quit_apps}), ctx)
     if busy:
@@ -122,34 +134,48 @@ def cmd_clean(args, ctx: Context) -> int:
     if args.interactive and not args.dry_run:
         chosen = [f for f in chosen if _confirm(
             f"  clean {f.rule.id} {report.size_str(f)} ({discover._display(ctx, f.root) if f.root else f.note})? [y/N] ")]
-    elif not args.dry_run and not args.yes and not _confirm(f"\nDelete {human(total)} now? [y/N] "):
+    elif not args.dry_run and not args.yes and not _confirm(f"\nClean {human(total + trash_total)} now? [y/N] "):
         print("Aborted. Nothing was deleted.")
         return 1
 
     if not args.dry_run and not ctx.is_root and any(f.rule.command_needs_root for f in chosen):
         if not sys.stdin.isatty() or os.system("sudo -v") != 0:  # ask for the password before the animation
-            print("Skipping Time Machine snapshots: they need your password (run interactively).")
+            print("Skipping items that need your password (run interactively to include them).")
             chosen = [f for f in chosen if not f.rule.command_needs_root]
 
     before = shutil.disk_usage(ctx.home).free
     print()
+    user_part = [f for f in chosen if f not in admin] if not args.dry_run else chosen
     with ui.make_reporter([("clean", 1)], quiet=args.quiet, counter_label="freed") as rep:
-        outcomes = cleaner.execute(chosen, ctx, dry_run=args.dry_run,
+        outcomes = cleaner.execute(user_part, ctx, dry_run=args.dry_run,
                                    log=None if args.quiet or ui.color_enabled() else print, reporter=rep)
+    ran_admin = False
+    if admin and not args.dry_run:
+        print(report.c("\n  Cleaning system items (admin)...", "1"))
+        ran_admin = cleaner.clean_as_admin(admin, ctx, quiet=True)
+        if not ran_admin:
+            print(report.c("  System items skipped (no password given or not in a terminal).", "33"))
     after = shutil.disk_usage(ctx.home).free
 
     print()
     for o in outcomes:
         status = report.c("ok", "32") if o.ok else report.c("!!", "33")
-        print(f"  {status}  {o.finding.rule.id:<24} {human(o.freed):>9}")
-        for m in o.messages:
+        amount = human(o.freed) + (f" (+{human(o.trashed)} to Trash)" if o.trashed else "")
+        print(f"  {status}  {o.finding.rule.id:<24} {amount:>9}")
+        for m in o.notes:
             print(report.c(f"        {m}", "2"))
+        for m in o.messages:
+            print(report.c(f"        {m}", "33"))
     freed = sum(o.freed for o in outcomes)
+    trashed = sum(o.trashed for o in outcomes)
     if args.dry_run:
-        print(f"\nDry run: would free about {human(freed)}. Re-run without --dry-run to do it.")
+        print(f"\nDry run: would free about {human(freed)}"
+              + (f" and move {human(trashed)} to the Trash" if trashed else "") + ". Re-run without --dry-run to do it.")
     else:
-        print(f"\nFreed about {human(freed)}. Free space: {human(before)} -> {human(after)}"
-              + (" (APFS may take a minute to release space from snapshots/purgeable files)"
+        print(f"\nFreed about {human(freed)}" + (" (plus the system items above)" if ran_admin else "")
+              + f". Free space: {human(before)} -> {human(after)}"
+              + (f"\nMoved {human(trashed)} to the Trash - empty it to free that space too." if trashed else "")
+              + ("\n(APFS may take a minute to release space from snapshots/purgeable files)"
                  if after - before < freed else ""))
     return 0
 
@@ -233,7 +259,8 @@ def cmd_menu(args, ctx: Context) -> int:
 
 def cmd_smart(args, ctx: Context) -> int:
     from . import smart
-    return smart.run(ctx, _rules(ctx, args), assume_yes=args.yes, quiet=args.quiet, dry_run=args.dry_run)
+    return smart.run(ctx, _rules(ctx, args), assume_yes=args.yes, quiet=args.quiet, dry_run=args.dry_run,
+                     empty_trash=args.empty_trash)
 
 
 def cmd_status(args, ctx: Context) -> int:
@@ -309,6 +336,71 @@ def cmd_optimize(args, ctx: Context) -> int:
     return 0
 
 
+def cmd_lens(args, ctx: Context) -> int:
+    import curses
+    from . import apptools
+    start = os.path.abspath(os.path.expanduser(args.path)) if args.path else None
+    if args.list or not interactive_ok():
+        path = start or ctx.home
+        with sizes.cache_session():
+            names = sorted(os.listdir(path))
+            full = [os.path.join(path, n) for n in names]
+            got = sizes.measure_many(full)
+        for p in sorted(full, key=lambda p: -got[p].bytes)[: args.top]:
+            print(f"{human(got[p].bytes):>9}  {os.path.basename(p)}{'/' if os.path.isdir(p) else ''}")
+        return 0
+    curses.wrapper(apptools.LensScreen(ctx, start).loop)
+    return 0
+
+
+def cmd_uninstall(args, ctx: Context) -> int:
+    from . import apptools, uninstall
+    apps = uninstall.list_apps(ctx)
+    if args.list or (not args.apps and not interactive_ok()):
+        with sizes.cache_session():
+            uninstall.measure_apps(apps)
+        uninstall.load_last_used(apps, ctx)
+        for a in sorted(apps, key=lambda a: -a.size):
+            print(f"{human(a.size):>9}  {uninstall.human_age(a.last_used):<10} {a.name:<32} {a.bundle_id}")
+        return 0
+    if args.apps:
+        wanted = {n.lower() for n in args.apps}
+        chosen = [a for a in apps if a.name.lower() in wanted or a.bundle_id.lower() in wanted
+                  or os.path.splitext(os.path.basename(a.path))[0].lower() in wanted]
+        if not chosen:
+            print("No matching app. See `msc uninstall --list`.")
+            return 2
+        with sizes.cache_session():
+            uninstall.measure_apps(chosen)
+            for a in chosen:
+                uninstall.collect(a, ctx)
+        for a in chosen:
+            print(f"\n{a.name} ({a.bundle_id}) - {human(a.total)} total")
+            print(f"  {human(a.size):>9}  {a.path}")
+            for p, size, admin in a.files:
+                print(f"  {human(size):>9}  {p}" + ("  [admin]" if admin else ""))
+        if args.dry_run:
+            return 0
+        if not args.yes and not _confirm(f"\nMove {len(chosen)} app(s) and their files to the Trash? [y/N] "):
+            print("Nothing was removed.")
+            return 1
+        apptools.run_uninstall(chosen, ctx)
+        return 0
+    import curses
+    un = apptools.UninstallScreen(ctx)
+    while curses.wrapper(un.loop) == "uninstall":
+        chosen = un.chosen()
+        apptools.run_uninstall(chosen, ctx)
+        gone = {a.path for a in chosen if not os.path.exists(a.path)}
+        un.apps = [a for a in un.apps if a.path not in gone]
+        un.selected -= gone
+        try:
+            input("\n  Press Enter to go back to the app list ")
+        except (EOFError, KeyboardInterrupt):
+            break
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="msc", description=__doc__,
                                 epilog="Run `msc` with no arguments for the interactive menu.")
@@ -340,6 +432,7 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("-n", "--dry-run", action="store_true", help="show what would happen, delete nothing")
     c.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
     c.add_argument("-i", "--interactive", action="store_true", help="confirm each item")
+    c.add_argument("--root", action="append", metavar="PATH", help=argparse.SUPPRESS)
     c.set_defaults(func=cmd_clean)
 
     sub.add_parser("menu", help="interactive home screen (default)").set_defaults(func=cmd_menu)
@@ -347,11 +440,25 @@ def build_parser() -> argparse.ArgumentParser:
     sm = sub.add_parser("smart", help="Smart Clean: clear caches & junk, skipping apps you have open")
     sm.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
     sm.add_argument("-n", "--dry-run", action="store_true", help="show what would be cleaned")
+    sm.add_argument("--empty-trash", action="store_true", help="also empty the Trash (asked otherwise)")
     sm.set_defaults(func=cmd_smart)
 
     st = sub.add_parser("status", help="live system status: CPU, GPU, memory, disk, network, battery")
     st.add_argument("--once", action="store_true", help="print one snapshot instead of the live view")
     st.set_defaults(func=cmd_status)
+
+    le = sub.add_parser("lens", help="Space Lens: browse any folder by size (default: your home folder)")
+    le.add_argument("path", nargs="?", help="folder to start in; `/` shows the whole disk")
+    le.add_argument("--list", action="store_true", help="print the biggest items instead of the browser")
+    le.add_argument("--top", type=int, default=30, help="how many items --list prints")
+    le.set_defaults(func=cmd_lens)
+
+    un = sub.add_parser("uninstall", help="remove apps together with all their leftovers")
+    un.add_argument("apps", nargs="*", metavar="APP", help="app name or bundle id (omit for the interactive list)")
+    un.add_argument("--list", action="store_true", help="list apps with size and last use")
+    un.add_argument("-n", "--dry-run", action="store_true", help="show what would be removed")
+    un.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
+    un.set_defaults(func=cmd_uninstall)
 
     su = sub.add_parser("startup", help="see and disable apps that start automatically")
     su.add_argument("--list", action="store_true", help="print the list instead of the interactive view")

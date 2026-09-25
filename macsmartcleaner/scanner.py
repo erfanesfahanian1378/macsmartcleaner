@@ -14,12 +14,21 @@ import fnmatch
 import glob
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Set, Tuple
 
 from .context import Context
 from .rules import Action, Rule
 from .sizes import Usage, measure_many
+
+
+def _safe_probe(rule: Rule, ctx: Context):
+    try:
+        return rule.probe(ctx)  # type: ignore[misc]
+    except Exception:  # noqa: BLE001 - a broken probe must not stop the scan
+        from .rules import ProbeResult
+        return ProbeResult()
 from .ui import NULL, Reporter
 
 
@@ -98,16 +107,26 @@ def measure_all(paths: Iterable[str], reporter: Reporter, workers: Optional[int]
 def scan(rules: Iterable[Rule], ctx: Context, reporter: Reporter = NULL, workers: Optional[int] = None) -> List[Finding]:
     rules = list(rules)
 
-    # ---- probes (tmutil, simctl, getconf) --------------------------------
+    # ---- probes (tmutil, mdfind, getconf...) ------------------------------
+    # Quick probes run in parallel threads (they mostly wait on subprocesses).
+    # Slow ones (simctl can take 30 s the first time) run in the background and
+    # are collected at the end, so the progress display never sits still.
     probes: Dict[str, object] = {}
     probe_rules = [r for r in rules if r.probe is not None]
-    reporter.begin("probe", "Checking Time Machine, simulators & system tools", total=len(probe_rules))
-    for rule in probe_rules:
-        reporter.current(rule.name)
-        probes[rule.id] = rule.probe(ctx)
-        reporter.step()
+    sync = [r for r in probe_rules if not r.probe_async]
+    background = [r for r in probe_rules if r.probe_async]
+    pool = ThreadPoolExecutor(max_workers=max(1, len(probe_rules)))
+    bg_futures = {r.id: pool.submit(_safe_probe, r, ctx) for r in background}
+    reporter.begin("probe", "Checking Time Machine, apps & system tools", total=len(sync))
+    futures = {pool.submit(_safe_probe, r, ctx): r for r in sync}
+    for fut in as_completed(futures):
+        r = futures[fut]
+        probes[r.id] = fut.result()
+        reporter.step(current=r.name)
     snaps = getattr(probes.get("tm-snapshots"), "present", False)
     reporter.end("Time Machine snapshots found" if snaps else "")
+    rules_all = rules
+    rules = [r for r in rules if not r.probe_async]
 
     # ---- phase 1: expand ---------------------------------------------------
     rule_roots: Dict[str, List[str]] = {r.id: _expand(r, ctx, probes) for r in rules}
@@ -215,6 +234,26 @@ def scan(rules: Iterable[Rule], ctx: Context, reporter: Reporter = NULL, workers
                     f.note = "run with sudo to measure"
                 findings.append(f)
 
+    # ---- background probes: collect and measure (their roots claim nothing) --
+    late: List[Finding] = []
+    for r in [r for r in rules_all if r.probe_async]:
+        reporter.current(f"waiting for {r.name}")
+        probe = bg_futures[r.id].result()
+        roots = [p for p in getattr(probe, "roots", []) if not os.path.islink(p)]
+        if not roots:
+            continue
+        usages2 = measure_many(roots, workers=workers)
+        total = Usage()
+        for p in roots:
+            total.add(usages2[p])
+        late.append(Finding(r, None, total.bytes, total.files, total.newest_mtime,
+                            [Target(p, usages2[p]) for p in roots], note=getattr(probe, "note", ""),
+                            errors=total.errors))
+    pool.shutdown(wait=False)
+    findings += late
+
+    # rules only worth offering above a size (rebuilding Spotlight for a small index is pointless)
+    findings = [f for f in findings if not (f.rule.min_size and f.size_known and f.size < f.rule.min_size)]
     _subtract_nested(findings)
     findings.sort(key=lambda f: f.size, reverse=True)
     reporter.end(f"{len(jobs):,} places checked")

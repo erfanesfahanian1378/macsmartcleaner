@@ -23,6 +23,16 @@ def _default_runner(cmd: Sequence[str], timeout: int) -> Optional[subprocess.Com
         return None
 
 
+def _real_ids() -> tuple:
+    """(uid, gid) of the person running msc, even through sudo."""
+    if os.geteuid() == 0 and os.environ.get("SUDO_UID"):
+        try:
+            return int(os.environ["SUDO_UID"]), int(os.environ.get("SUDO_GID", "20"))
+        except ValueError:
+            pass
+    return os.getuid(), os.getgid()
+
+
 def _real_user_home() -> str:
     """When run through sudo, still clean the invoking user's home."""
     sudo_user = os.environ.get("SUDO_USER")
@@ -42,6 +52,27 @@ class Context:
     now: float = field(default_factory=time.time)
     runner: Runner = _default_runner
     sudo_user: Optional[str] = field(default_factory=lambda: os.environ.get("SUDO_USER"))
+    uid: int = field(default_factory=lambda: _real_ids()[0])
+    gid: int = field(default_factory=lambda: _real_ids()[1])
+
+    def give_back(self, path: str) -> None:
+        """When running as root through sudo, hand files we create in the user's home back to them."""
+        if self.is_root and self.sudo_user:
+            try:
+                os.chown(path, self.uid, self.gid)
+            except OSError:
+                pass
+
+    def makedirs(self, path: str) -> None:
+        """os.makedirs that leaves every newly created folder owned by the real user."""
+        missing = []
+        p = os.path.abspath(path)
+        while not os.path.exists(p):
+            missing.append(p)
+            p = os.path.dirname(p)
+        os.makedirs(path, exist_ok=True)
+        for m in reversed(missing):
+            self.give_back(m)
 
     def path(self, p: str) -> str:
         if p == "~":
