@@ -60,6 +60,17 @@ class TestUninstaller(FakeMac):
         self.assertTrue(os.path.exists(self.h("Library/Preferences/com.figma.other.plist")))
         self.assertTrue(os.path.exists(self.h("Library/Application Support/Figmatic/x")))
 
+    def test_copies_sharing_a_bundle_id_keep_their_settings(self):
+        self.app("Python Launcher", "org.python.PythonLauncher", folder="Applications/Python 3.12")
+        self.app("Python Launcher", "org.python.PythonLauncher", folder="Applications/Python 3.13")
+        write(self.h("Library/Preferences/org.python.PythonLauncher.plist"), 100)
+        found = sorted(a.name for a in uninstall.list_apps(self.ctx))
+        self.assertEqual(found, ["Python Launcher (Python 3.12)", "Python Launcher (Python 3.13)"])
+        a = uninstall.list_apps(self.ctx)[0]
+        self.assertTrue(a.shared)
+        uninstall.collect(a, self.ctx)
+        self.assertEqual(a.files, [])
+
     def test_mdls_dates_are_utc(self):
         d = uninstall._parse_mdls_dates("2025-01-01 00:00:00 +0000\0(null)", 2)
         self.assertEqual(d[0], 1735689600.0)
@@ -230,3 +241,44 @@ class TestLeftoverAppleIds(unittest.TestCase):
                                      side_effect=lambda bid, c: bid == "com.helper.tool"):
                 roots = rules_mod._probe_leftovers(ctx).roots
             self.assertEqual([os.path.basename(r) for r in roots], ["com.gone.app"])
+
+
+class TestAdminStep(FakeMac):
+    def test_admin_rerun_command_targets_exactly_the_chosen_items(self):
+        import unittest.mock
+        items = [Finding(rule("rotated-logs"), "/private/var/log/a.gz", 10),
+                 Finding(rule("system-logs"), "/Library/Logs", 20)]
+        calls = []
+        with unittest.mock.patch("subprocess.call", side_effect=lambda cmd, **kw: calls.append(cmd) or 0), \
+                unittest.mock.patch("sys.stdin") as stdin:
+            stdin.isatty.return_value = True
+            self.assertTrue(cleaner.clean_as_admin(items, self.ctx))
+        self.assertEqual(calls[0], ["sudo", "-v"])
+        cmd = calls[1]
+        self.assertEqual(cmd[:3], ["sudo", "-n", "env"])
+        self.assertIn("clean", cmd)
+        self.assertEqual(cmd[cmd.index("--only") + 1], "rotated-logs,system-logs")
+        roots = [cmd[i + 1] for i, c in enumerate(cmd) if c == "--root"]
+        self.assertEqual(roots, ["/private/var/log/a.gz", "/Library/Logs"])
+
+    def test_no_password_means_nothing_runs(self):
+        import unittest.mock
+        with unittest.mock.patch("subprocess.call", return_value=1) as call, \
+                unittest.mock.patch("sys.stdin") as stdin:
+            stdin.isatty.return_value = True
+            self.assertFalse(cleaner.clean_as_admin([Finding(rule("core-dumps"), "/cores/core.1", 5)], self.ctx))
+        self.assertEqual(call.call_count, 1)  # only `sudo -v`
+
+
+class TestAerials(FakeMac):
+    def test_videos_removed_catalogue_and_folders_kept(self):
+        base = os.path.join(self.root, "Library/Application Support/com.apple.idleassetsd/Customer")
+        write(os.path.join(base, "4KSDR240FPS", "A1B2.mov"), 300_000)
+        write(os.path.join(base, "entries.json"), 500)
+        self.ctx.is_root = True  # the rule needs admin rights
+        findings = scan([rule("aerial-videos")], self.ctx)
+        self.assertEqual([os.path.basename(t.path) for f in findings for t in f.targets], ["4KSDR240FPS"])
+        cleaner.execute(findings, self.ctx, dry_run=False)
+        self.assertFalse(os.path.exists(os.path.join(base, "4KSDR240FPS", "A1B2.mov")))
+        self.assertTrue(os.path.isdir(os.path.join(base, "4KSDR240FPS")))
+        self.assertTrue(os.path.exists(os.path.join(base, "entries.json")))

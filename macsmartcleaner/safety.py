@@ -36,6 +36,7 @@ ALLOWED_ABS = [
     "/Library/Caches", "/Library/Logs", "/private/var/log", "/private/var/folders",
     "/Library/Developer/CoreSimulator/Caches", "/Users/Shared/UnrealEngine/Launcher/VaultCache",
     "/cores", "/macOS Install Data", "/System/Volumes/Data/macOS Install Data",
+    "/Library/Application Support/com.apple.idleassetsd/Customer",
 ]
 # Specific places inside otherwise off-limits areas that a rule may remove (glob patterns).
 ALLOWED_EXCEPTIONS = [

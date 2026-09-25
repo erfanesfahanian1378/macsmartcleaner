@@ -54,6 +54,7 @@ class App:
     path: str
     bundle_id: str
     version: str = ""
+    shared: bool = False  # another installed copy uses the same bundle id (e.g. one per Python version)
     size: int = 0
     last_used: Optional[float] = None
     files: List[Tuple[str, int, bool]] = field(default_factory=list)  # (path, bytes, needs_admin)
@@ -90,6 +91,18 @@ def list_apps(ctx: Context) -> List[App]:
                        os.path.splitext(os.path.basename(path))[0])
             apps.append(App(name=name, path=path, bundle_id=bid,
                             version=str(info.get("CFBundleShortVersionString", ""))))
+    # same name twice (one Python Launcher per Python version): add the folder to tell them apart
+    by_name: Dict[str, int] = {}
+    for a in apps:
+        by_name[a.name] = by_name.get(a.name, 0) + 1
+    for a in apps:
+        if by_name[a.name] > 1:
+            a.name = f"{a.name} ({os.path.basename(os.path.dirname(a.path))})"
+    counts: Dict[str, int] = {}
+    for a in apps:
+        counts[a.bundle_id.lower()] = counts.get(a.bundle_id.lower(), 0) + 1
+    for a in apps:
+        a.shared = counts[a.bundle_id.lower()] > 1
     return apps
 
 
@@ -158,6 +171,9 @@ def find_related(app: App, ctx: Context) -> List[Tuple[str, bool]]:
 
 
 def collect(app: App, ctx: Context) -> None:
+    if app.shared:
+        app.files = []  # its settings/caches also belong to the other installed copy: keep them
+        return
     related = find_related(app, ctx)
     sizes = measure_many([p for p, _ in related])
     app.files = [(p, sizes[p].bytes if sizes[p].exists else 0, admin) for p, admin in related]

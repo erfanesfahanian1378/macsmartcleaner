@@ -110,7 +110,7 @@ class Browser(Canvas):
     # ---- curses ------------------------------------------------------------
     def tag_attr(self, tag: str) -> int:
         n = {"safe": 1, "likely-junk": 1, "caution": 2, "orphaned": 2, "stale": 2, "old": 2, "review": 3,
-             "data": 3, "large": 3, "info": 4, "system": 4}.get(tag, 7)
+             "data": 3, "large": 3, "info": 4, "system": 4, "known": 4}.get(tag, 7)
         return curses.color_pair(n)
 
     def draw(self) -> None:

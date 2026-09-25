@@ -347,7 +347,10 @@ class UninstallScreen(Canvas):
                                                                sorted(kinds.items(), key=lambda kv: -kv[1]))
                 for k2, l2 in enumerate(wrap(line, w - 4)[:4]):
                     self.put(dy + 2 + k2, 2, l2, curses.color_pair(MAGENTA) if k2 == 0 else curses.color_pair(GREY))
-                if any(adm for _p, _s, adm in a.files):
+                if a.shared:
+                    self.put(dy + detail_h - 1, 2, "Another copy of this app is installed, so its settings are kept.",
+                             curses.color_pair(GREY))
+                elif any(adm for _p, _s, adm in a.files):
                     self.put(dy + detail_h - 1, 2, "Some system files need your password.", curses.color_pair(GREY))
             else:
                 self.put(dy + 2, 2, "Press space to select - its leftovers (settings, caches, containers, agents)"

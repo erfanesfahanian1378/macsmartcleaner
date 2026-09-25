@@ -12,7 +12,7 @@ Open *System Settings > General > Storage* on almost any Mac and you'll find a g
 | ✦ | **Smart Clean** | One key clears caches and junk. It **skips the caches of apps you have open**, so nothing glitches |
 | ◧ | **Space Lens** | Browse any folder, or the whole disk including System Data, sorted by size. Drill down and send anything to the Trash |
 | ⌫ | **Uninstaller** | Removes an app **together with everything it left behind**: settings, caches, containers, agents. All of it goes to the Trash |
-| ◎ | **Deep Scan** | Finds everything using space (about 60 known junk sources plus anything big it doesn't recognise). Browse it, read what each item is, pick what goes |
+| ◎ | **Deep Scan** | Finds everything using space (92 known junk sources plus anything big it doesn't recognise). Browse it, read what each item is, pick what goes |
 | ↑ | **Startup Items** | Every app and helper that launches automatically. Disable or remove them, and spot leftovers from deleted apps |
 | ⚙ | **Optimize** | Flush DNS, free inactive memory, fix a stuck Finder/Dock, rebuild Spotlight and "Open With", and more |
 | ◔ | **System Status** | A live dashboard: CPU per core, GPU, memory pressure, swap, disk, network, battery, thermal state. Quit heavy apps from it |
@@ -240,6 +240,7 @@ are **never deleted automatically**. If you decide one should go,
 | Where the space hides | Typical size | Who has it |
 |---|---|---|
 | **Time Machine local snapshots** (their size isn't shown anywhere) | 20-200 GB | anyone with Time Machine |
+| **Aerial wallpaper/screen saver videos** macOS downloaded (4K, per location) | 10-60 GB | macOS 14+ |
 | iPhone/iPad backups and firmware downloads | 10-200 GB | anyone with an iPhone/iPad |
 | App caches: browsers, Spotify, Slack, Discord, Teams, VS Code, Adobe… | 2-30 GB | everyone |
 | Logs, crash reports, Mail attachment copies, Trash (including external drives' trash) | 1-10 GB | everyone |
@@ -255,7 +256,7 @@ are **never deleted automatically**. If you decide one should go,
 | Unreal DerivedDataCache & vault, Unity caches & editors, Godot templates, Steam shader cache | 5-100 GB | game developers |
 | `node_modules`, Unity `Library/`, Unreal `Intermediate/`, `.venv`, Rust `target/`… in idle projects | 5-100 GB | developers |
 
-Run `msc rules` for the full list of 85 rules, or `msc explain <rule-id>` for the details of one rule.
+Run `msc rules` for the full list of 92 rules, or `msc explain <rule-id>` for the details of one rule.
 Run **`sudo msc`** once in a while to include the system-level locations. Without it they're shown with
 a "?" size, because macOS only lets an admin look inside them.
 
@@ -277,6 +278,18 @@ a "?" size, because macOS only lets an admin look inside them.
 | Skips caches of apps you have open | partly | ✔ Smart Clean checks every running app |
 | Explains every item, dry-run, no hidden actions | – | ✔ |
 | Price, account, background process | subscription | free, none, none |
+
+**What CleanMyMac X has that `msc` doesn't (yet), and why:**
+
+| CleanMyMac X module | Status in msc |
+|---|---|
+| Malware removal | Not included. Use macOS's built-in XProtect, which is always on |
+| Privacy (browser history, cookies, recent items) | Not included. It's privacy, not space: those are tiny and your browser's own "Clear history" does it |
+| Mail attachments | Not included on purpose. For POP accounts the local copy can be the *only* copy |
+| Photos junk | Not included on purpose. We never write inside your Photos library |
+| App Updater | Not included. `brew upgrade --cask` and the App Store cover it |
+| Extensions manager (Safari, QuickLook, plug-ins) | Partly: launch agents/daemons and login items are in Startup Items |
+| Shredder | Not included. On SSDs "secure erase" of single files isn't reliable; FileVault is the real answer |
 
 **Things we deliberately don't do.** Some cleaners remove app **language files** and "thin" **universal
 binaries**. On modern macOS that breaks apps' code signatures: apps can refuse to launch or stop

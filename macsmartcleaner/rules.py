@@ -316,7 +316,8 @@ BUILTIN_RULES: List[Rule] = [
       why="Every simulator's disk (apps, data). Grows with every app you run in the simulator.",
       impact="Run `xcrun simctl erase all` to reset them, or delete unused ones in Xcode > Devices."),
     R("simulator-runtimes", "Simulator runtimes", XCODE, V, REP,
-      paths=("/Library/Developer/CoreSimulator/Images", "/Library/Developer/CoreSimulator/Cryptex"),
+      paths=("/Library/Developer/CoreSimulator/Images", "/Library/Developer/CoreSimulator/Cryptex",
+             "/Library/Developer/CoreSimulator/Profiles/Runtimes"),
       why="Each installed iOS/watchOS/visionOS runtime is 5-10 GB.",
       impact="Remove old ones in Xcode > Settings > Components, or `xcrun simctl runtime delete <id>`."),
 
@@ -554,6 +555,21 @@ BUILTIN_RULES: List[Rule] = [
       paths=("~/Library/Application Support/Epic/Zen/Data",),
       why="Unreal Engine 5.4+ local shared cache server data (cooked assets, shaders).",
       impact="Rebuilt when you open projects (first open is slower)."),
+    R("aerial-videos", "Aerial wallpaper & screensaver videos", SYS, C, CON, needs_root=True, keep_dirs=True,
+      paths=("/Library/Application Support/com.apple.idleassetsd/Customer",),
+      exclude=("*.json", "*.plist", "*.db", "*.db-*", "*.sqlite*"),  # keep macOS's catalogue of Aerials
+      why="4K Aerial videos macOS downloads for the wallpaper and screen saver. Often 10-60 GB of "
+          "'System Data' on macOS 14 and later.",
+      impact="macOS downloads again only the Aerial you actually use (when it's next shown)."),
+    R("system-simulator-caches", "System-wide simulator caches", XCODE, S, CON, needs_root=True,
+      paths=("/Library/Developer/CoreSimulator/Caches",),
+      why="Shared dyld caches built for simulator runtimes.", impact="Rebuilt on next simulator boot."),
+    R("command-line-tools", "Xcode Command Line Tools", XCODE, V, REP, paths=("/Library/Developer/CommandLineTools",),
+      why="Apple's developer tools: git, clang, make, python3 (msc itself runs on it).",
+      impact="Keep it. If it's huge, reinstall with `xcode-select --install` to drop old SDKs."),
+    R("dotnet-sdks", ".NET SDKs", PKG, V, REP, paths=("~/.dotnet/sdk", "/usr/local/share/dotnet/sdk"),
+      why="Every .NET SDK version installed (~500 MB each).",
+      impact="List them with `dotnet --list-sdks` and remove old ones with the dotnet-core-uninstall tool."),
     R("gem-cache", "Ruby gem cache", PKG, S, CON, paths=("~/.gem/ruby/*/cache", "~/.gem/specs"),
       why="Downloaded .gem files.", impact="Re-downloaded when installing gems."),
 ]

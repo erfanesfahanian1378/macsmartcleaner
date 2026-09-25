@@ -46,6 +46,15 @@ EXPLAIN: Dict[str, str] = {
     "/private/var/folders": "Per-user temp/caches - reboot clears much of it; `msc` cleans the safe part.",
     "/private/var/db": "System databases (Spotlight, updates, diagnostics) - leave alone; "
                        "if huge, a restart or Safe Mode boot trims it.",
+    "/Library/Developer": "Xcode Command Line Tools and simulator runtimes - remove old runtimes in "
+                          "Xcode > Settings > Components (or `xcrun simctl runtime delete`).",
+    "/Library/Frameworks": "Frameworks installed by apps (Python.org, Mono, audio plug-ins) - remove them "
+                           "with the app's own uninstaller.",
+    "/Library/Application Support": "Data installed by apps for all users - the Uninstaller removes an app's part.",
+    "~/Library/Android": "Android SDK - remove old platforms/system images in Android Studio > SDK Manager.",
+    "~/.dotnet": ".NET SDKs - `dotnet --list-sdks`, then remove old ones with dotnet-core-uninstall.",
+    "~/Library/Application Support/com.apple.wallpaper": "Wallpaper extensions and cached images - pick a "
+                                                        "static wallpaper to let macOS trim it.",
     "/private/var/db/diagnostics": "Unified system logs - `msc` can erase them (rule unified-logs).",
     "/private/var/db/uuidtext": "Symbol data for the unified logs - shrinks together with them.",
     "/private/var/db/Spotlight-V100": "Spotlight's system index - rebuild it via Optimize > Rebuild Spotlight.",
@@ -161,7 +170,7 @@ def find_space_hogs(ctx: Context, findings: Sequence[Finding], min_size: int = 1
             continue
         display = _display(ctx, path)
         if display in EXPLAIN:
-            verdict, reason = "system", EXPLAIN[display]
+            verdict, reason = ("known" if display.startswith("~") else "system"), EXPLAIN[display]
         elif parent.startswith(("/private/var", "/System/Volumes")):
             verdict, reason = "system", "macOS system data - don't delete by hand"
         else:

@@ -157,7 +157,10 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
         for t in f.targets:
             reporter.current(t.path)
             if not os.path.lexists(t.path):
-                reporter.step()  # already gone (e.g. removed together with its parent folder)
+                # already gone: removed with its parent folder, or macOS pruned it (log rotation)
+                if len(f.targets) == 1:
+                    o.notes.append("already removed (macOS or another step got to it first)")
+                reporter.step()
                 continue
             try:
                 safe_path = safety.check(t.path, ctx)

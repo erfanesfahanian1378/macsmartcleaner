@@ -10,7 +10,13 @@
 - **System Status**: select a heavy process and quit / force quit it (core processes protected)
 - **System items now ask for your password** and are cleaned in a separate admin step for exactly the
   items you picked, instead of failing with "needs sudo"
-- New rules: unused disk images anywhere in your folders (Trash), Deleted Users, Unreal Zen cache
+- New rules: Aerial wallpaper/screen saver videos (often 10-60 GB of System Data on macOS 14+), unused
+  disk images anywhere in your folders (Trash), Deleted Users, Unreal Zen cache, system-wide simulator
+  caches; explained entries for Command Line Tools, .NET SDKs, Android SDK and more
+- Real-Mac fixes: Apple group containers (`groups.com.apple.*`, Shortcuts' `is.workflow.*`) are no longer
+  flagged as leftovers, and every leftover now needs Spotlight to confirm no such app exists; copies of an
+  app that share a bundle id (one Python Launcher per Python version) are labelled by folder and keep
+  their shared settings when one copy is removed
 - Smart Clean also cleans the per-user system cache, shows real app names for skipped apps, and offers
   to empty the Trash
 - Fixes found on a real Mac: the Time Machine note showed another item's text; today's live system

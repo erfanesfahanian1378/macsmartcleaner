@@ -25,7 +25,7 @@ def c(text: str, code: str) -> str:
 
 SAFETY_STYLE = {Safety.SAFE: "32", Safety.CAUTION: "33", Safety.REVIEW: "35"}
 VERDICT_STYLE = {"likely-junk": "32", "orphaned": "33", "stale": "33", "data": "35", "system": "36",
-                 "old": "33", "large": "35",
+                 "old": "33", "large": "35", "known": "36",
                  "unknown": "2"}
 
 
