@@ -37,6 +37,19 @@ def installed_apps(ctx: Context) -> Tuple[Set[str], Set[str]]:
     return ids, names
 
 
+_spotlight_state: dict = {}
+
+
+def spotlight_ok(ctx: Context) -> bool:
+    """True if Spotlight indexes the data volume, so an empty mdfind result can be trusted."""
+    if ctx.root != "/":
+        return False
+    if "ok" not in _spotlight_state:
+        res = ctx.run(["mdutil", "-s", "/System/Volumes/Data"], timeout=15, as_user=False)
+        _spotlight_state["ok"] = bool(res is not None and res.returncode == 0 and "enabled" in res.stdout.lower())
+    return _spotlight_state["ok"]
+
+
 def bundle_id_of(folder_name: str) -> Optional[str]:
     """'ABCDE12345.group.com.foo.bar' / 'com.foo.bar.savedState' -> 'com.foo.bar' (None if not an id)."""
     n = folder_name
@@ -44,15 +57,33 @@ def bundle_id_of(folder_name: str) -> Optional[str]:
         if n.endswith(suffix):
             n = n[: -len(suffix)]
     n = _TEAM_PREFIX.sub("", n)
-    if n.startswith("group."):
-        n = n[len("group."):]
+    for prefix in ("systemgroup.", "groups.", "group."):
+        if n.startswith(prefix):
+            n = n[len(prefix):]
+            break
     if not _BUNDLE_ID.match(n):
         return None
     return n.lower()
 
 
+# Apple components whose ids don't start with com.apple (legacy acquisitions and system groups)
+APPLE_PREFIXES = ("com.apple.", "apple.", "com.appleinternal.", "is.workflow.", "com.workflow.",
+                  "com.shazam.", "com.beats.", "com.filemaker.", "com.claris.")
+
+
 def is_apple(bundle_id: str) -> bool:
-    return bundle_id.startswith(("com.apple.", "apple.", "com.appleinternal."))
+    b = bundle_id.lower()
+    return b.startswith(APPLE_PREFIXES) or ".com.apple." in f".{b}" or "com.apple" in b
+
+
+def installed_somewhere(bundle_id: str, ctx: Context) -> bool:
+    """Ask Spotlight whether any app or helper with this id (or from this vendor) exists anywhere."""
+    if not spotlight_ok(ctx):
+        return False
+    vendor = ".".join(bundle_id.split(".")[:2])
+    query = f'kMDItemCFBundleIdentifier == "{bundle_id}*"c || kMDItemCFBundleIdentifier == "{vendor}.*"c'
+    res = ctx.run(["mdfind", query], timeout=15, as_user=True)
+    return bool(res is not None and res.returncode == 0 and res.stdout.strip())
 
 
 def belongs_to_installed(bundle_id: str, ids: Set[str]) -> bool:

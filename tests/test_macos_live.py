@@ -64,13 +64,31 @@ class TestLiveSystem(unittest.TestCase):
         self.assertIsInstance(sysinfo.parse_pmset_therm(sysinfo._cmd(["pmset", "-g", "therm"])), str)
 
     def test_parallel_walker_matches_sequential_on_apfs(self):
-        roots = ["/System/Library/Frameworks/AppKit.framework", "/System/Library/CoreServices",
-                 os.path.expanduser("~/Library/Caches"), "/usr/share"]
+        # the sealed system volume can't change between the two walks, so results must be identical
+        roots = ["/System/Library/Frameworks/AppKit.framework", "/System/Library/CoreServices", "/usr/share"]
         roots = [r for r in roots if os.path.isdir(r)]
         want = {r: sizes.measure(r) for r in roots}
         got = sizes.measure_many(roots, workers=4)
         for r in roots:
             self.assertEqual((got[r].bytes, got[r].files), (want[r].bytes, want[r].files), r)
+
+    def test_parallel_walker_hard_links_and_clones_on_apfs(self):
+        import shutil
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            for i in range(20):
+                os.makedirs(os.path.join(d, f"s{i}"))
+                with open(os.path.join(d, f"s{i}", "f"), "wb") as fh:
+                    fh.write(os.urandom(50_000))
+            os.link(os.path.join(d, "s0", "f"), os.path.join(d, "s1", "hard"))
+            shutil.copyfile(os.path.join(d, "s2", "f"), os.path.join(d, "s3", "copy"))
+            self.assertEqual(sizes.measure_many([d], workers=4)[d].bytes, sizes.measure(d).bytes)
+
+    def test_live_folder_within_a_percent(self):
+        # a live folder changes while we look at it; both walkers must still agree closely
+        r = os.path.expanduser("~/Library")
+        a, b = sizes.measure(r).bytes, sizes.measure_many([r], workers=4)[r].bytes
+        self.assertLess(abs(a - b), max(0.01 * a, 5_000_000))
 
     def test_launchctl_parsers(self):
         res = self.ctx.run(["launchctl", "print-disabled", f"gui/{self.ctx.uid}"], timeout=20)
@@ -87,7 +105,8 @@ class TestLiveSystem(unittest.TestCase):
         probe = rules._probe_leftovers(self.ctx)
         print(f"\n  leftovers flagged on this Mac: {probe.roots[:40]}")
         for p in probe.roots:
-            self.assertFalse(os.path.basename(p).lower().startswith("com.apple."), p)
+            bid = apps.bundle_id_of(os.path.basename(p))
+            self.assertFalse(bid is None or apps.is_apple(bid), f"Apple data flagged as leftover: {p}")
 
     def test_uninstaller_listing(self):
         found = uninstall.list_apps(self.ctx)

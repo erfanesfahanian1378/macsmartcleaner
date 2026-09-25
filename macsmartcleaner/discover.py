@@ -351,8 +351,9 @@ def find_large_files(ctx: Context, findings: Sequence[Finding] = (), min_size: i
     home = ctx.home
     claimed = {os.path.normpath(t.path) for f in findings for t in f.targets}
     candidates: List[str] = []
+    from .apps import spotlight_ok
     res = ctx.run(["mdfind", "-onlyin", home, f"kMDItemFSSize >= {min_size}"], timeout=60, as_user=True) \
-        if ctx.root == "/" else None
+        if spotlight_ok(ctx) else None
     if res is not None and res.returncode == 0:
         candidates = [ln for ln in res.stdout.splitlines() if ln.strip()]
     else:

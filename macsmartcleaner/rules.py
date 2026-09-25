@@ -22,7 +22,7 @@ import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
 from .context import Context
 
@@ -143,7 +143,7 @@ LEFTOVER_PARENTS = ("~/Library/Containers", "~/Library/Group Containers", "~/Lib
 
 def _probe_leftovers(ctx: Context) -> ProbeResult:
     """Library folders named after apps that are no longer installed."""
-    from .apps import belongs_to_installed, bundle_id_of, installed_apps, is_apple
+    from .apps import belongs_to_installed, bundle_id_of, installed_apps, installed_somewhere, is_apple
 
     ids, _names = installed_apps(ctx)
     if len(ids) < 5:  # can't see /Applications (tests, odd setups): don't guess
@@ -158,16 +158,23 @@ def _probe_leftovers(ctx: Context) -> ProbeResult:
         for name in names:
             bid = bundle_id_of(name)
             if bid and not is_apple(bid) and not belongs_to_installed(bid, ids):
-                roots.append(os.path.join(base, name))
-    return ProbeResult(roots=roots, note=f"{len(roots)} folder(s) from apps that are no longer installed")
+                roots.append((bid, os.path.join(base, name)))
+    # second opinion from Spotlight, which knows apps and helpers installed anywhere on the Mac
+    verdict: Dict[str, bool] = {}
+    for bid, _p in roots:
+        if bid not in verdict:
+            verdict[bid] = installed_somewhere(bid, ctx)
+    found = [p for bid, p in roots if not verdict[bid]]
+    return ProbeResult(roots=found, note=f"{len(found)} folder(s) from apps that are no longer installed")
 
 
 def _probe_disk_images(ctx: Context) -> ProbeResult:
     """Disk images in the home folder (not Downloads - that has its own rule) via Spotlight, else a shallow look."""
     roots: List[str] = []
     home = ctx.home
+    from .apps import spotlight_ok
     res = ctx.run(["mdfind", "-onlyin", home, "kMDItemContentType == 'com.apple.disk-image-udif' || "
-                   "kMDItemFSName == '*.dmg'"], timeout=30, as_user=True) if ctx.root == "/" else None
+                   "kMDItemFSName == '*.dmg'"], timeout=30, as_user=True) if spotlight_ok(ctx) else None
     if res is not None and res.returncode == 0:
         roots = [p for p in res.stdout.splitlines() if p.lower().endswith((".dmg", ".sparseimage"))]
     else:

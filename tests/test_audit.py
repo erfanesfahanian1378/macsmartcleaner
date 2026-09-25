@@ -198,3 +198,35 @@ class TestQuitProtection(unittest.TestCase):
                           ("python", os.getpid())):
             screen.quit_process({"name": name, "pid": pid}, force=True)
             self.assertIn("part of macOS", screen.flash, name)
+
+
+class TestLeftoverAppleIds(unittest.TestCase):
+    """Real false positives seen on a macOS 26 machine."""
+
+    def test_apple_group_containers_are_recognised(self):
+        from macsmartcleaner.apps import bundle_id_of, is_apple
+        for name in ("243LU875E5.groups.com.apple.podcasts", "group.is.workflow.my.app",
+                     "group.is.workflow.shortcuts", "systemgroup.com.apple.configurationprofiles",
+                     "group.com.apple.notes", "com.apple.Safari.savedState"):
+            bid = bundle_id_of(name)
+            self.assertTrue(bid is None or is_apple(bid), name)
+        self.assertFalse(is_apple(bundle_id_of("ABCDE12345.com.figma.Desktop")))
+
+    def test_spotlight_second_opinion_clears_candidates(self):
+        import unittest.mock
+        from macsmartcleaner import rules as rules_mod
+        from macsmartcleaner.context import Context
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            ctx = Context(home=d, root=d, is_root=False, sudo_user=None)
+            for i in range(6):
+                app = os.path.join(d, "Applications", f"A{i}.app", "Contents")
+                os.makedirs(app)
+                with open(os.path.join(app, "Info.plist"), "wb") as fh:
+                    plistlib.dump({"CFBundleIdentifier": f"com.v{i}.app"}, fh)
+            os.makedirs(os.path.join(d, "Library", "Containers", "com.helper.tool"))
+            os.makedirs(os.path.join(d, "Library", "Containers", "com.gone.app"))
+            with unittest.mock.patch("macsmartcleaner.apps.installed_somewhere",
+                                     side_effect=lambda bid, c: bid == "com.helper.tool"):
+                roots = rules_mod._probe_leftovers(ctx).roots
+            self.assertEqual([os.path.basename(r) for r in roots], ["com.gone.app"])

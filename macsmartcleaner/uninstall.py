@@ -202,38 +202,44 @@ def uninstall(app: App, ctx: Context) -> Tuple[int, List[str]]:
         except (OSError, safety.UnsafePath) as e:
             problems.append(f"{path}: {getattr(e, 'strerror', None) or e}")
     if admin_paths:
-        ok = _admin_move(admin_paths, ctx)
-        if ok:
-            moved += sum(s for p, s in [(app.path, app.size)] + [(p, s) for p, s, _a in app.files] if p in admin_paths)
-        else:
-            problems.append(f"{len(admin_paths)} item(s) need your password and were skipped")
+        failed = _admin_move(admin_paths, ctx)
+        sizes_by_path = dict([(app.path, app.size)] + [(p, s) for p, s, _a in app.files])
+        moved += sum(sizes_by_path.get(p, 0) for p in admin_paths if p not in failed)
+        if app.path in failed:
+            problems.append("macOS blocked removing the app itself: allow your Terminal app in System Settings > "
+                            "Privacy & Security > App Management, then try again")
+        elif failed:
+            problems.append(f"{len(failed)} system item(s) were skipped (no admin password)")
     return moved, problems
 
 
-def _admin_move(paths: Sequence[str], ctx: Context) -> bool:
-    """Move root-owned items to the user's Trash with sudo (after the same safety check)."""
+def _admin_move(paths: Sequence[str], ctx: Context) -> List[str]:
+    """Move root-owned items to the user's Trash with sudo (after the same safety check).
+
+    Returns the paths that could not be moved.
+    """
     trash = ctx.path("~/.Trash")
     targets = []
+    failed: List[str] = []
     for p in paths:
         try:
             targets.append(safety.check(p, ctx, trash=True))
         except safety.UnsafePath:
-            return False
+            failed.append(p)
     if ctx.is_root:
         cmd_prefix: List[str] = []
     else:
         if subprocess.call(["sudo", "-v"]) != 0:
-            return False
+            return list(paths)
         cmd_prefix = ["sudo", "-n"]
-    ok = True
     for p in targets:
         stem, ext = os.path.splitext(os.path.basename(p))
         dest = os.path.join(trash, os.path.basename(p))
         if os.path.lexists(dest):
             dest = os.path.join(trash, f"{stem} {time.strftime('%H.%M.%S')}{ext}")
-        if subprocess.call(cmd_prefix + ["mv", p, dest]) != 0:
-            ok = False
-    return ok
+        if subprocess.call(cmd_prefix + ["mv", p, dest], stderr=subprocess.DEVNULL) != 0:
+            failed.append(p)
+    return failed
 
 
 def human_age(ts: Optional[float], now: Optional[float] = None) -> str:

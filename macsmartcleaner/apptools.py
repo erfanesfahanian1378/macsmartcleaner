@@ -1,6 +1,7 @@
 """Full-screen tools: Space Lens (browse folders by size) and the Uninstaller."""
 from __future__ import annotations
 
+import contextvars
 import curses
 import os
 import threading
@@ -79,7 +80,7 @@ class LensScreen(Canvas):
             result.update(sizes.measure_many(dirs, on_dir=on_dir))
 
         self.busy = True
-        t = threading.Thread(target=work, daemon=True)
+        t = threading.Thread(target=contextvars.copy_context().run, args=(work,), daemon=True)
         t.start()
         while t.is_alive():
             self.frame += 1
@@ -267,8 +268,11 @@ class UninstallScreen(Canvas):
             self.progress[1] += nbytes
             self.progress[2] = d
 
-        t = threading.Thread(target=lambda: (uninstall.measure_apps(self.apps, on_dir),
-                                             uninstall.load_last_used(self.apps, self.ctx)), daemon=True)
+        def work() -> None:
+            uninstall.measure_apps(self.apps, on_dir)
+            uninstall.load_last_used(self.apps, self.ctx)
+
+        t = threading.Thread(target=contextvars.copy_context().run, args=(work,), daemon=True)
         t.start()
         while t.is_alive():
             self.frame += 1
