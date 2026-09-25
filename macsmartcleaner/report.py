@@ -108,6 +108,7 @@ def print_report(ctx: Context, findings: Sequence[Finding], hogs: Sequence[Hog],
         w(c(f"\n  ! Time Machine: {snaps[0].note}.\n"
             "    This is very often the biggest hidden chunk of 'System Data'. "
             "Clean with: msc clean --only tm-snapshots\n", "33"))
+    w(c("\n  Tip: run `msc` (without --report) to browse, select and delete these interactively.\n", "36"))
     if not ctx.is_root:
         w(c("\n  Tip: some system folders need `sudo` to measure/clean, and Terminal needs\n"
             "  Full Disk Access (System Settings > Privacy & Security) to see everything.\n", "2"))

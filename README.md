@@ -14,7 +14,7 @@ Open *System Settings > General > Storage* on almost any Mac and you'll find a g
 No sign-up, no background app, no telemetry, no dependencies. Nothing leaves your Mac.
 
 ```
-$ msc scan
+$ msc scan --report
 
 Xcode & Apple dev  (41.8 GB)
      28.1 GB  safe     xcode-deriveddata        ~/Library/Developer/Xcode/DerivedData
@@ -64,16 +64,71 @@ macOS hides a lot of `~/Library` from Terminal, which makes the numbers come out
 Open **System Settings > Privacy & Security > Full Disk Access**, turn on **Terminal**
 (or iTerm, VS Code, whatever you use), and restart that app. Then run `msc doctor` to confirm.
 
-## Use it in 3 steps
+## Use it
+
+Just type:
 
 ```bash
-msc scan                 # 1. look: shows everything, changes nothing
-msc clean --dry-run      # 2. preview: what the safe cleanup would delete
-msc clean                # 3. clean: shows the plan and asks "Delete X GB now? [y/N]"
+msc
 ```
 
-Want a nicer view? `msc scan --html ~/Desktop/storage.html && open ~/Desktop/storage.html`
-creates a report page with an explanation for every item.
+**1. It scans, with live progress.** You can always see it working: an animated spinner, a
+percentage bar, files counted, GB scanned, elapsed time, and the folder it's reading right now.
+Nothing is deleted during a scan.
+
+```
+  ◆ macsmartcleaner  scanning your Mac - nothing is deleted during a scan
+
+  ✔ Checking Time Machine, simulators & system tools  Time Machine snapshots found · 0:01
+  ✔ Measuring known junk locations  1,204 places checked · 0:48
+  ⠹ Finding project build folders (node_modules, Library, .venv...)                  3/4
+    ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╸━━━━━━━━━━━━━━━━━━━━━━━━━━━━  61%
+    1,842,310 files · 212.4 GB scanned · 1:07 · ~/Projects/game/Library/Artifacts
+```
+
+**2. You browse the results and choose.** A full-screen list opens in your terminal:
+
+```
+ ◆ macsmartcleaner                              ████████████████······ 812 GB used · 188 GB free
+                                                                  Selected: 104.2 GB in 23 item(s)
+  Junk & caches (147.6 GB)   Projects (18.3 GB)   Big folders (31.0 GB)
+ ─────────────────────────────────────────────────────────────────────────────────────────────────
+ ▸ [x]   28.1 GB             safe      Xcode DerivedData             ~/Library/Developer/Xcode/…
+   [x]   22.4 GB ████████··  safe      App caches (~/Library/Caches) ~/Library/Caches
+   [ ]   14 snaps            caution   Time Machine local snapshots
+   [ ]   18.0 GB ██████····  caution   Docker Desktop disk image     ~/Library/Containers/com.do…
+ ─────────────────────────────────────────────────────────────────────────────────────────────────
+ Xcode DerivedData · safe
+  Build intermediates and indexes for every project you've opened.
+  After cleaning: Next build of each project is a full build.
+ ─────────────────────────────────────────────────────────────────────────────────────────────────
+  ↑↓ move  space select  tab lists  a safe  c +caution  n none  o Finder  d delete  q quit
+```
+
+| Key | Does |
+|---|---|
+| `↑` `↓` (or `j` `k`), `PgUp` `PgDn` | move through the list; the panel below explains the highlighted item |
+| `space` | select / unselect |
+| `tab` or `1` `2` `3` | switch between **Junk & caches**, **Projects** and **Big folders** |
+| `a` / `c` / `n` | select all *safe* / *safe + caution* / nothing in this list |
+| `o` | show the folder in Finder so you can look inside |
+| `d` | delete what's selected. Shows exactly what will happen and asks `y`/`n` first |
+| `q` | quit |
+
+*Safe* items start out selected. Anything marked *review* or found under *Big folders* is only
+selected if you pick it yourself, and big folders go to the Trash so you can undo it.
+
+**3. It cleans, with live progress,** then shows how much space you got back
+(`✨ Freed 104.2 GB  free space 188 GB → 292 GB`) and takes you back to the list.
+
+Prefer plain commands, for scripts or a quick check?
+
+```bash
+msc scan --report                  # print a text report instead of the browser
+msc scan --html ~/Desktop/storage.html && open ~/Desktop/storage.html   # shareable web report
+msc clean --dry-run                # what the safe cleanup would delete
+msc clean                          # do it (asks first)
+```
 
 ### How safe is "safe"?
 
@@ -112,7 +167,8 @@ Run `msc rules` for the full list, or `msc explain <rule-id>` for the details of
 ## All commands
 
 ```bash
-msc scan [--html FILE] [--json FILE]        # full report
+msc                                         # scan + interactive browser
+msc scan --report [--html FILE] [--json FILE]  # text/web/JSON report instead
 msc scan --projects ~/code ~/Unity          # tell it where your projects live
 msc clean                                   # safe tier
 msc clean --tier caution --skip maven       # include "caution" items, except Maven
@@ -151,6 +207,8 @@ scanner.py  expands locations, measures real disk usage in parallel, never count
 discover.py heuristics for the unknown: big uncovered folders, orphaned app data, project build output
 cleaner.py  selects by safety level -> safety check on every path -> delete or run the tool's own
             cleaner (brew cleanup, docker prune, tmutil…) -> re-measures what was actually freed
+ui.py       live progress: spinner, gradient percentage bar, live counters (plain lines when not a terminal)
+tui.py      the interactive curses browser: select, explain, reveal in Finder, delete
 safety.py   hard deny-list: home, Documents, Photos, Keychains, iCloud, /System and any parent
             of them; symlinks can't be used to escape
 ```

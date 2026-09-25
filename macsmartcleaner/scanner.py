@@ -14,15 +14,14 @@ import fnmatch
 import glob
 import os
 import sys
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Iterable, List, Optional, Set, Tuple
 
 from .context import Context
 from .rules import Action, Rule
 from .sizes import Usage, measure
-
-Progress = Optional[Callable[[str], None]]
+from .ui import NULL, Reporter
 
 
 @dataclass
@@ -88,16 +87,34 @@ def _expand(rule: Rule, ctx: Context, probes: Dict[str, object]) -> List[str]:
     return [r for r in roots if not os.path.islink(r)]
 
 
-def scan(rules: Iterable[Rule], ctx: Context, progress: Progress = None, workers: int = 8) -> List[Finding]:
+def measure_all(paths: Iterable[str], reporter: Reporter, workers: int = 8) -> Dict[str, Usage]:
+    """Measure paths in parallel, feeding live counters and one step per finished path."""
+    def on_dir(d: str, files: int, nbytes: int) -> None:
+        reporter.count(files, nbytes)
+        reporter.current(d)
+
+    out: Dict[str, Usage] = {}
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(measure, p, on_dir): p for p in paths}
+        for fut in as_completed(futures):
+            out[futures[fut]] = fut.result()
+            reporter.step()
+    return out
+
+
+def scan(rules: Iterable[Rule], ctx: Context, reporter: Reporter = NULL, workers: int = 8) -> List[Finding]:
     rules = list(rules)
-    say = progress or (lambda _m: None)
 
     # ---- probes (tmutil, simctl, getconf) --------------------------------
     probes: Dict[str, object] = {}
-    for rule in rules:
-        if rule.probe is not None:
-            say(f"probing {rule.name}")
-            probes[rule.id] = rule.probe(ctx)
+    probe_rules = [r for r in rules if r.probe is not None]
+    reporter.begin("probe", "Checking Time Machine, simulators & system tools", total=len(probe_rules))
+    for rule in probe_rules:
+        reporter.current(rule.name)
+        probes[rule.id] = rule.probe(ctx)
+        reporter.step()
+    snaps = getattr(probes.get("tm-snapshots"), "present", False)
+    reporter.end("Time Machine snapshots found" if snaps else "")
 
     # ---- phase 1: expand ---------------------------------------------------
     rule_roots: Dict[str, List[str]] = {r.id: _expand(r, ctx, probes) for r in rules}
@@ -150,11 +167,8 @@ def scan(rules: Iterable[Rule], ctx: Context, progress: Progress = None, workers
                 jobs.add(root)
 
     # ---- phase 2: measure --------------------------------------------------
-    say(f"measuring {len(jobs)} locations")
-    usages: Dict[str, Usage] = {}
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        for path, usage in zip(sorted(jobs), pool.map(measure, sorted(jobs))):
-            usages[path] = usage
+    reporter.begin("rules", "Measuring known junk locations", total=len(jobs))
+    usages = measure_all(sorted(jobs), reporter, workers)
 
     # ---- phase 3: assemble -------------------------------------------------
     findings: List[Finding] = []
@@ -201,4 +215,5 @@ def scan(rules: Iterable[Rule], ctx: Context, progress: Progress = None, workers
                 findings.append(Finding(rule, root, u.bytes, u.files, u.newest_mtime, targets,
                                         errors=u.errors))
     findings.sort(key=lambda f: f.size, reverse=True)
+    reporter.end(f"{len(jobs):,} places checked")
     return findings

@@ -12,14 +12,14 @@ import glob
 import os
 import plistlib
 import re
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
 from .context import Context
 from .rules import Action, Rule, Safety
-from .scanner import Finding, Target
-from .sizes import Usage, measure
+from .scanner import Finding, Target, measure_all
+from .sizes import Usage
+from .ui import NULL, Reporter
 
 # --------------------------------------------------------------------------- space hogs
 
@@ -121,7 +121,7 @@ def classify(name: str, parent: str, u: Usage, ctx: Context, ids: Set[str], name
 
 
 def find_space_hogs(ctx: Context, findings: Sequence[Finding], min_size: int = 1_000_000_000,
-                    workers: int = 8) -> List[Hog]:
+                    workers: int = 8, reporter: Reporter = NULL) -> List[Hog]:
     covered = [os.path.normpath(f.root) for f in findings if f.root] + [
         os.path.normpath(t.path) for f in findings for t in f.targets]
 
@@ -147,8 +147,9 @@ def find_space_hogs(ctx: Context, findings: Sequence[Finding], min_size: int = 1
                 continue
             candidates.append((e.path, parent))
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        usages = list(pool.map(measure, [c[0] for c in candidates]))
+    reporter.begin("hogs", "Hunting for unknown big folders", total=len(candidates))
+    measured = measure_all([c[0] for c in candidates], reporter, workers)
+    usages = [measured[c[0]] for c in candidates]
 
     ids, names = installed_apps(ctx)
     hogs: List[Hog] = []
@@ -176,6 +177,7 @@ def find_space_hogs(ctx: Context, findings: Sequence[Finding], min_size: int = 1
             verdict, reason = classify(os.path.basename(path), ctx.path(parent), u, ctx, ids, names)
         hogs.append(Hog(path, display, u, verdict, reason))
     hogs.sort(key=lambda h: h.usage.bytes, reverse=True)
+    reporter.end(f"{len(hogs)} big folder(s) worth a look")
     return hogs
 
 
@@ -260,17 +262,20 @@ def _project_last_touched(project: str, artifact_names: Set[str]) -> float:
 
 
 def find_project_artifacts(ctx: Context, roots: Optional[Iterable[str]] = None, max_depth: int = 7,
-                           workers: int = 8) -> List[Finding]:
+                           workers: int = 8, reporter: Reporter = NULL) -> List[Finding]:
     roots = [ctx.path(r) for r in (roots or PROJECT_ROOT_GUESSES)]
     seen_roots: Set[str] = set()
     hits: List[Tuple[str, str, ArtifactKind]] = []  # (project dir, artifact path, kind)
-    for root in roots:
+    reporter.begin("projects", "Finding project build folders (node_modules, Library, .venv...)")
+    for i, root in enumerate(roots):
+        reporter.fraction(0.5 * i / max(len(roots), 1))
         real = os.path.realpath(root)
         if not os.path.isdir(real) or any(real == s or real.startswith(s + "/") for s in seen_roots):
             continue
         seen_roots.add(real)
         base_depth = real.rstrip("/").count("/")
         for dirpath, dirnames, _files in os.walk(real, followlinks=False):
+            reporter.current(dirpath)
             if dirpath.count("/") - base_depth >= max_depth:
                 dirnames[:] = []
                 continue
@@ -283,8 +288,9 @@ def find_project_artifacts(ctx: Context, roots: Optional[Iterable[str]] = None, 
                     keep.append(d)
             dirnames[:] = keep
 
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        usages = list(pool.map(measure, [h[1] for h in hits]))
+    reporter.fraction(0.5)
+    measured = _measure_fraction([h[1] for h in hits], reporter, workers)
+    usages = [measured[h[1]] for h in hits]
 
     findings: List[Finding] = []
     names = {k.dirname for k in ARTIFACTS}
@@ -302,7 +308,26 @@ def find_project_artifacts(ctx: Context, roots: Optional[Iterable[str]] = None, 
         f.newest_mtime = _project_last_touched(project, names)
         findings.append(f)
     findings.sort(key=lambda f: f.size, reverse=True)
+    reporter.end(f"{len(findings)} found")
     return findings
+
+
+def _measure_fraction(paths: List[str], reporter: Reporter, workers: int) -> Dict[str, Usage]:
+    """measure_all, mapping completed paths onto the second half of the stage."""
+    done = [0]
+
+    class Half(Reporter):
+        def step(self, n=1, current=None):
+            done[0] += n
+            reporter.fraction(0.5 + 0.5 * done[0] / max(len(paths), 1))
+
+        def count(self, files=0, nbytes=0):
+            reporter.count(files, nbytes)
+
+        def current(self, text):
+            reporter.current(text)
+
+    return measure_all(paths, Half(), workers)
 
 
 def _fmt_days(d: float) -> str:

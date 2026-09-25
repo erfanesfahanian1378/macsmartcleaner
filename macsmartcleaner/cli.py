@@ -8,26 +8,37 @@ import shutil
 import sys
 from typing import List, Optional, Sequence
 
-from . import __version__, cleaner, discover, report, schedule
+from . import __version__, cleaner, discover, report, schedule, ui
 from .context import Context
 from .rules import Action, Rule, default_user_rules_path, load_rules
 from .scanner import Finding, scan
 from .sizes import human, parse_size
 
+def full_scan(ctx: Context, args, projects: bool = True, hogs: bool = True, hog_min: str = "1GB"):
+    """Run every scan stage behind one live progress display."""
+    # weights = rough share of total scan time, used for the overall percentage
+    stages = [("probe", 3), ("rules", 40)]
+    if projects:
+        stages.append(("projects", 17))
+    if hogs:
+        stages.append(("hogs", 40))
+    if not args.quiet:
+        ui.banner("scanning your Mac - nothing is deleted during a scan")
+    found_projects: List[Finding] = []
+    found_hogs: list = []
+    with ui.make_reporter(stages, quiet=args.quiet, counter_label="scanned") as rep:
+        findings = scan(_rules(ctx, args), ctx, reporter=rep)
+        if projects:
+            found_projects = discover.find_project_artifacts(ctx, getattr(args, "projects", None) or None,
+                                                              reporter=rep)
+        if hogs:
+            found_hogs = discover.find_space_hogs(ctx, findings + found_projects, min_size=parse_size(hog_min),
+                                                  reporter=rep)
+    return findings, found_projects, found_hogs
 
-def _progress(quiet: bool):
-    if quiet or not sys.stderr.isatty():
-        return None
 
-    def say(msg: str) -> None:
-        sys.stderr.write(f"\r\033[K  {msg}...")
-        sys.stderr.flush()
-    return say
-
-
-def _clear_progress(quiet: bool) -> None:
-    if not quiet and sys.stderr.isatty():
-        sys.stderr.write("\r\033[K")
+def interactive_ok() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty() and os.environ.get("TERM") != "dumb"
 
 
 def _rules(ctx: Context, args) -> List[Rule]:
@@ -49,21 +60,16 @@ def _split(values: Optional[Sequence[str]]) -> List[str]:
 # --------------------------------------------------------------------------- commands
 
 def cmd_scan(args, ctx: Context) -> int:
-    say = _progress(args.quiet)
-    findings = scan(_rules(ctx, args), ctx, progress=say)
-    projects: List[Finding] = []
-    if not args.no_projects:
-        if say:
-            say("looking for project build artifacts")
-        projects = discover.find_project_artifacts(ctx, args.projects or None)
-    hogs = []
-    if not args.no_discover:
-        if say:
-            say("looking for other big folders (this is the slow part)")
-        hogs = discover.find_space_hogs(ctx, findings + projects, min_size=parse_size(args.hog_min))
-    _clear_progress(args.quiet)
-    report.print_report(ctx, findings, hogs, projects, min_size=parse_size(args.min_size))
+    findings, projects, hogs = full_scan(ctx, args, projects=not args.no_projects, hogs=not args.no_discover,
+                                         hog_min=args.hog_min)
     data = report.to_dict(ctx, findings, hogs, projects)
+    if not args.report and interactive_ok():
+        from . import tui
+        for path, writer in ((args.json, report.write_json), (args.html, report.write_html)):
+            if path:
+                writer(path, data)
+        return tui.run(ctx, findings, projects, hogs)
+    report.print_report(ctx, findings, hogs, projects, min_size=parse_size(args.min_size))
     if args.json:
         report.write_json(args.json, data)
         print(f"JSON report written to {args.json}")
@@ -83,20 +89,16 @@ def _confirm(prompt: str) -> bool:
 
 
 def cmd_clean(args, ctx: Context) -> int:
-    say = _progress(args.quiet)
     only, skip = _split(args.only), _split(args.skip)
-    findings = scan(_rules(ctx, args), ctx, progress=say)
+    want_projects = args.projects is not None or any(o.startswith("project") for o in only)
+    findings, projects, _ = full_scan(ctx, args, projects=want_projects, hogs=False)
     chosen = cleaner.select(findings, tier=args.tier, only=[o for o in only if not o.startswith("project")],
                             skip=skip)
-    if args.projects is not None or any(o.startswith("project") for o in only):
-        if say:
-            say("looking for project build artifacts")
-        projects = discover.find_project_artifacts(ctx, args.projects or None)
+    if want_projects:
         projects = [p for p in projects if ctx.days_since(p.newest_mtime) >= args.older_than]
         if only and not any(o in ("project", "projects", "project:*") for o in only):
             projects = [p for p in projects if p.rule.id in only]
         chosen += [p for p in projects if p.rule.id not in skip]
-    _clear_progress(args.quiet)
 
     if not chosen:
         print("Nothing to clean for this selection. Run `msc scan` to see everything.")
@@ -122,8 +124,16 @@ def cmd_clean(args, ctx: Context) -> int:
         print("Aborted. Nothing was deleted.")
         return 1
 
+    if not args.dry_run and not ctx.is_root and any(f.rule.command_needs_root for f in chosen):
+        if not sys.stdin.isatty() or os.system("sudo -v") != 0:  # ask for the password before the animation
+            print("Skipping Time Machine snapshots: they need your password (run interactively).")
+            chosen = [f for f in chosen if not f.rule.command_needs_root]
+
     before = shutil.disk_usage(ctx.home).free
-    outcomes = cleaner.execute(chosen, ctx, dry_run=args.dry_run, log=None if args.quiet else print)
+    print()
+    with ui.make_reporter([("clean", 1)], quiet=args.quiet, counter_label="freed") as rep:
+        outcomes = cleaner.execute(chosen, ctx, dry_run=args.dry_run,
+                                   log=None if args.quiet or ui.color_enabled() else print, reporter=rep)
     after = shutil.disk_usage(ctx.home).free
 
     print()
@@ -210,7 +220,8 @@ def cmd_doctor(args, ctx: Context) -> int:
 # --------------------------------------------------------------------------- parser
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(prog="msc", description=__doc__)
+    p = argparse.ArgumentParser(prog="msc", description=__doc__,
+                                epilog="Run `msc` with no arguments to scan and browse results interactively.")
     p.add_argument("--version", action="version", version=f"macsmartcleaner {__version__}")
     p.add_argument("--rules-file", help="extra JSON rules (default ~/.config/macsmartcleaner/rules.json)")
     p.add_argument("-q", "--quiet", action="store_true")
@@ -222,6 +233,7 @@ def build_parser() -> argparse.ArgumentParser:
     s.add_argument("--no-discover", action="store_true", help="skip the (slower) unknown big-folder search")
     s.add_argument("--min-size", default="50MB", help="hide findings smaller than this (default 50MB)")
     s.add_argument("--hog-min", default="1GB", help="size threshold for unknown big folders (default 1GB)")
+    s.add_argument("--report", action="store_true", help="print a text report instead of the interactive browser")
     s.add_argument("--json", metavar="FILE")
     s.add_argument("--html", metavar="FILE")
     s.set_defaults(func=cmd_scan)

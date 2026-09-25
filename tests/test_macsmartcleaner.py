@@ -251,10 +251,51 @@ class TestDiscover(FakeMac):
         write(self.h("Library/CloudStorage/OneDrive-Uni/big.bin"), 2_000_000)
         write(self.h("Library/Mobile Documents/com~apple~CloudDocs/big.bin"), 2_000_000)
         walked = []
-        real = discover.measure
-        with unittest.mock.patch.object(discover, "measure", lambda p: walked.append(p) or real(p)):
+        from macsmartcleaner import scanner
+        real = scanner.measure
+        with unittest.mock.patch.object(scanner, "measure", lambda p, cb=None: walked.append(p) or real(p, cb)):
             discover.find_space_hogs(self.ctx, [], min_size=1)
         self.assertFalse([p for p in walked if "CloudStorage" in p or "Mobile Documents" in p], walked)
+
+
+class TestInteractive(FakeMac):
+    def test_default_selection_and_cleanup_updates_list(self):
+        from macsmartcleaner import tui
+        write(self.h("Library/Caches/com.spotify.client/data"), 50_000)
+        write(self.h(".cache/huggingface/hub/models--bert/blob"), 90_000)
+        write(self.h("Library/Application Support/OldApp/data.db"), 2_000_000)
+        findings = scan(BUILTIN_RULES, self.ctx)
+        hogs = discover.find_space_hogs(self.ctx, findings, min_size=1_000_000)
+        items = tui._items_from(self.ctx, findings, [], hogs)
+        by_title = {i.title: i for i in items}
+        self.assertTrue(by_title["App caches (~/Library/Caches)"].selected)   # safe: preselected
+        self.assertFalse(by_title["Hugging Face models"].selected)           # review: never preselected
+        self.assertFalse(by_title["OldApp"].selected)                         # unknown folder: opt-in only
+        by_title["OldApp"].selected = True
+        with redirect_stdout(io.StringIO()):
+            freed, problems = tui.perform_cleanup(self.ctx, items)
+        self.assertEqual(problems, [])
+        self.assertGreater(freed, 0)
+        titles = {i.title for i in items}
+        self.assertNotIn("App caches (~/Library/Caches)", titles)
+        self.assertNotIn("OldApp", titles)
+        self.assertIn("Hugging Face models", titles)
+        self.assertTrue(os.path.exists(self.h(".Trash/OldApp/data.db")))
+
+    def test_live_reporter_renders_percentage(self):
+        from macsmartcleaner import ui
+        buf = io.StringIO()
+        rep = ui.LiveReporter([("a", 1), ("b", 3)], stream=buf)
+        rep.begin("a", "First")
+        rep.end("ok")
+        rep.begin("b", "Second", total=4)
+        rep.step(2)
+        rep.count(10, 5_000_000)
+        self.assertAlmostEqual(rep.percent(), 62.5)
+        rep.close()
+        out = buf.getvalue()
+        self.assertIn("✔", out)
+        self.assertIn("First", out)
 
 
 class TestCLI(FakeMac):

@@ -9,6 +9,10 @@ from __future__ import annotations
 import os
 import stat
 from dataclasses import dataclass
+from typing import Callable, Optional
+
+# called after each directory with (dir path, files added, bytes added)
+OnDir = Optional[Callable[[str, int, int], None]]
 
 
 @dataclass
@@ -42,8 +46,11 @@ def _account(u: Usage, st: os.stat_result, seen: set) -> None:
             u.newest_mtime = st.st_mtime
 
 
-def measure(path: str) -> Usage:
-    """Return the disk usage of ``path`` (file or directory tree)."""
+def measure(path: str, on_dir: OnDir = None) -> Usage:
+    """Return the disk usage of ``path`` (file or directory tree).
+
+    ``on_dir`` receives incremental progress so a UI can show live counters.
+    """
     u = Usage()
     try:
         root_st = os.lstat(path)
@@ -57,12 +64,15 @@ def measure(path: str) -> Usage:
     seen: set = set()
     _account(u, root_st, seen)
     if not stat.S_ISDIR(root_st.st_mode):
+        if on_dir:
+            on_dir(path, u.files, u.bytes)
         return u
 
     dev = root_st.st_dev
     stack = [path]
     while stack:
         current = stack.pop()
+        files0, bytes0 = u.files, u.bytes
         try:
             it = os.scandir(current)
         except OSError:
@@ -85,6 +95,8 @@ def measure(path: str) -> Usage:
                 # listing can fail midway (cloud file providers time out, network
                 # volumes drop); keep what we counted and move on
                 u.errors += 1
+        if on_dir:
+            on_dir(current, u.files - files0, u.bytes - bytes0)
     if not u.files:
         u.newest_mtime = root_st.st_mtime
     return u

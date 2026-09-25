@@ -13,7 +13,8 @@ from . import safety
 from .context import Context
 from .rules import Action, Safety
 from .scanner import Finding
-from .sizes import measure
+from .sizes import human, measure
+from .ui import NULL, Reporter
 
 TIER_LEVELS = {"safe": {Safety.SAFE}, "caution": {Safety.SAFE, Safety.CAUTION}}
 
@@ -77,9 +78,12 @@ def running_apps(names: Sequence[str], ctx: Context) -> List[str]:
 
 
 def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
-            log: Optional[Callable[[str], None]] = None) -> List[Outcome]:
+            log: Optional[Callable[[str], None]] = None, reporter: Reporter = NULL) -> List[Outcome]:
     say = log or (lambda _m: None)
     outcomes: List[Outcome] = []
+    units = sum(len(f.rule.commands) if f.rule.action == Action.COMMAND else len(f.targets) or 1
+                for f in findings)
+    reporter.begin("clean", "Previewing cleanup" if dry_run else "Cleaning", total=units)
     for f in findings:
         o = Outcome(f)
         outcomes.append(o)
@@ -87,6 +91,7 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
         if rule.needs_root and not ctx.is_root:
             o.ok = False
             o.messages.append("needs sudo - rerun with `sudo msc clean ...` to include it")
+            reporter.step(max(len(f.targets), 1))
             continue
 
         if rule.action == Action.COMMAND:
@@ -94,6 +99,7 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
                 full = _format_cmd(cmd, f.root)
                 if rule.command_needs_root and not ctx.is_root:
                     full = ["sudo"] + full
+                reporter.step(current="running " + " ".join(full))
                 if dry_run:
                     o.messages.append("would run: " + " ".join(full))
                     continue
@@ -112,9 +118,11 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
                 o.freed = max(0, f.size - after)
             elif dry_run:
                 o.freed = f.size
+            reporter.count(nbytes=o.freed)
             continue
 
         for t in f.targets:
+            reporter.current(t.path)
             try:
                 safe_path = safety.check(t.path, ctx)
             except safety.UnsafePath as e:
@@ -123,15 +131,21 @@ def execute(findings: Sequence[Finding], ctx: Context, dry_run: bool = True,
                 continue
             if dry_run:
                 o.freed += t.usage.bytes
+                reporter.step()
+                reporter.count(t.usage.files, t.usage.bytes)
                 continue
             try:
                 _remove(safe_path)
             except OSError as e:
                 o.messages.append(f"{t.path}: {e.strerror or e}")
             remaining = measure(safe_path)
-            o.freed += max(0, t.usage.bytes - (remaining.bytes if remaining.exists else 0))
+            freed = max(0, t.usage.bytes - (remaining.bytes if remaining.exists else 0))
+            o.freed += freed
+            reporter.step()
+            reporter.count(t.usage.files, freed)
             if remaining.exists and remaining.bytes:
                 o.messages.append(f"partially removed {t.path} (some files are protected or in use)")
+    reporter.end(f"{human(sum(o.freed for o in outcomes))} {'would be freed' if dry_run else 'freed'}")
     if not dry_run:
         _write_history(ctx, outcomes)
     return outcomes
