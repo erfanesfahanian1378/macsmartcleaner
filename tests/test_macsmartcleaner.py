@@ -5,6 +5,7 @@ import subprocess
 import tempfile
 import time
 import unittest
+import unittest.mock
 from contextlib import redirect_stdout
 
 from macsmartcleaner import cleaner, discover, safety
@@ -75,6 +76,32 @@ class TestSizes(unittest.TestCase):
             write(os.path.join(d, "x"), 200_000)
             os.link(os.path.join(d, "x"), os.path.join(d, "y"))
             self.assertLess(measure(d).bytes, 400_000)
+
+
+    def test_listing_error_midway_does_not_crash(self):
+        # macOS cloud providers (OneDrive, iCloud) can raise ETIMEDOUT while iterating
+        from unittest import mock
+        import errno
+        real_scandir = os.scandir
+
+        class Flaky:
+            def __init__(self, path):
+                self.inner = real_scandir(path)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                self.inner.close()
+            def __iter__(self):
+                yield next(iter(self.inner))
+                raise TimeoutError(errno.ETIMEDOUT, "Operation timed out")
+
+        with tempfile.TemporaryDirectory() as d:
+            write(os.path.join(d, "a"), 10_000)
+            write(os.path.join(d, "b"), 10_000)
+            with mock.patch("macsmartcleaner.sizes.os.scandir", Flaky):
+                u = measure(d)
+            self.assertEqual(u.files, 1)
+            self.assertEqual(u.errors, 1)
 
 
 class TestRules(unittest.TestCase):
@@ -219,6 +246,15 @@ class TestDiscover(FakeMac):
         self.assertEqual(hogs["SomeCache"].verdict, "likely-junk")
         self.assertIn(hogs["GoneApp"].verdict, ("stale", "orphaned"))
         self.assertNotIn("com.x", hogs)
+
+    def test_cloud_storage_is_never_walked(self):
+        write(self.h("Library/CloudStorage/OneDrive-Uni/big.bin"), 2_000_000)
+        write(self.h("Library/Mobile Documents/com~apple~CloudDocs/big.bin"), 2_000_000)
+        walked = []
+        real = discover.measure
+        with unittest.mock.patch.object(discover, "measure", lambda p: walked.append(p) or real(p)):
+            discover.find_space_hogs(self.ctx, [], min_size=1)
+        self.assertFalse([p for p in walked if "CloudStorage" in p or "Mobile Documents" in p], walked)
 
 
 class TestCLI(FakeMac):

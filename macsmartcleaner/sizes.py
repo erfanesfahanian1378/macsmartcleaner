@@ -69,17 +69,22 @@ def measure(path: str) -> Usage:
             u.errors += 1
             continue
         with it:
-            for entry in it:
-                try:
-                    st = entry.stat(follow_symlinks=False)
-                except OSError:
-                    u.errors += 1
-                    continue
-                if st.st_dev != dev:  # mounted volume (e.g. simulator runtimes)
-                    continue
-                _account(u, st, seen)
-                if stat.S_ISDIR(st.st_mode):
-                    stack.append(entry.path)
+            try:
+                for entry in it:
+                    try:
+                        st = entry.stat(follow_symlinks=False)
+                    except OSError:
+                        u.errors += 1
+                        continue
+                    if st.st_dev != dev:  # mounted volume (e.g. simulator runtimes)
+                        continue
+                    _account(u, st, seen)
+                    if stat.S_ISDIR(st.st_mode):
+                        stack.append(entry.path)
+            except OSError:
+                # listing can fail midway (cloud file providers time out, network
+                # volumes drop); keep what we counted and move on
+                u.errors += 1
     if not u.files:
         u.newest_mtime = root_st.st_mtime
     return u

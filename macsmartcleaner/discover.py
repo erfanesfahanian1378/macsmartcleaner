@@ -31,6 +31,9 @@ HOG_PARENTS = [
 # measured by drilling into them instead of as one blob
 DRILL = {"~/Library/Application Support", "~/Library/Containers", "~/Library/Group Containers",
          "~/Library/Caches", "~/Library/Developer", "/Library/Application Support"}
+# Cloud-synced folders: walking them can force downloads or hang on the file
+# provider, and their content is the user's files, not System Data junk.
+NEVER_WALK = {"~/Library/CloudStorage", "~/Library/Mobile Documents"}
 USER_DATA = {"Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music", "Public",
              "Applications", "Library", "Sites", "Parallels"}
 
@@ -136,7 +139,7 @@ def find_space_hogs(ctx: Context, findings: Sequence[Finding], min_size: int = 1
             except OSError:
                 continue
             rel = parent + "/" + e.name if parent != "~" else "~/" + e.name
-            if rel in DRILL or rel in HOG_PARENTS:
+            if rel in DRILL or rel in HOG_PARENTS or rel in NEVER_WALK:
                 continue
             if parent == "~" and (e.name in USER_DATA or not e.name.startswith(".")):
                 continue  # only dot-dirs in home; your own folders aren't "System Data"
