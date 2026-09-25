@@ -68,7 +68,8 @@ def cmd_scan(args, ctx: Context) -> int:
         for path, writer in ((args.json, report.write_json), (args.html, report.write_html)):
             if path:
                 writer(path, data)
-        return tui.run(ctx, findings, projects, hogs)
+        return tui.run(ctx, findings, projects, hogs, rescan=lambda: full_scan(
+            ctx, args, projects=not args.no_projects, hogs=not args.no_discover, hog_min=args.hog_min))
     report.print_report(ctx, findings, hogs, projects, min_size=parse_size(args.min_size))
     if args.json:
         report.write_json(args.json, data)
@@ -219,9 +220,97 @@ def cmd_doctor(args, ctx: Context) -> int:
 
 # --------------------------------------------------------------------------- parser
 
+def cmd_menu(args, ctx: Context) -> int:
+    from . import app, smart
+
+    scan_args = build_parser().parse_args(["scan"])
+    scan_args.quiet = args.quiet
+    scan_args.rules_file = args.rules_file
+    return app.run(ctx, deep_scan=lambda: cmd_scan(scan_args, ctx),
+                   smart_clean=lambda: smart.run(ctx, _rules(ctx, args)))
+
+
+def cmd_smart(args, ctx: Context) -> int:
+    from . import smart
+    return smart.run(ctx, _rules(ctx, args), assume_yes=args.yes, quiet=args.quiet, dry_run=args.dry_run)
+
+
+def cmd_status(args, ctx: Context) -> int:
+    from . import sysinfo
+    mon = sysinfo.Monitor(ctx.home)
+    if args.once or not interactive_ok():
+        mon.sample()
+        import time as _t
+        _t.sleep(1)
+        mon.sample()
+        s, m = mon.snapshot(), mon.machine
+        mem = s.mem
+        print(f"{m.model or ''} {m.chip} · {m.os_name} · up {sysinfo.fmt_uptime(m.boot_time)}".strip())
+        print(f"CPU      {(s.cpu_total or 0) * 100:5.1f}%   load {' '.join(f'{v:.2f}' for v in s.load)}")
+        if mem.get("total"):
+            print(f"Memory   {mem['used'] / 1e9:5.1f} of {mem['total'] / 1e9:.0f} GB   pressure {s.pressure_level}"
+                  f"   swap {s.swap_used / 1e9:.1f} GB")
+        if s.gpu.get("util") is not None:
+            print(f"GPU      {s.gpu['util'] * 100:5.1f}%")  # type: ignore[operator]
+        print(f"Disk     {human(s.disk_used)} used, {human(s.disk_free)} free")
+        print(f"Network  down {sysinfo.fmt_rate(s.net_rx_bps).strip()}  up {sysinfo.fmt_rate(s.net_tx_bps).strip()}")
+        if s.battery:
+            print(f"Battery  {s.battery['percent']}% {s.battery['state']}")
+        print(f"Thermal  {s.thermal}")
+        return 0
+    import curses
+    from . import app
+    mon.start()
+    try:
+        curses.wrapper(app.StatusScreen(mon).loop)
+    finally:
+        mon.stop()
+    return 0
+
+
+def cmd_startup(args, ctx: Context) -> int:
+    from . import startup
+    if args.list or not interactive_ok():
+        for it in startup.scan(ctx):
+            state = "broken" if it.broken else "enabled" if it.enabled else "disabled"
+            print(f"{state:<9} {it.kind_label:<14} {it.name:<30} {it.label}")
+        return 0
+    import curses
+    from . import app
+    screen = app.StartupScreen(ctx)
+    while curses.wrapper(screen.loop) == "sudo":
+        app.run_pending_startup(screen, ctx)
+    return 0
+
+
+def cmd_optimize(args, ctx: Context) -> int:
+    from . import app, optimize
+    tasks = optimize.available(ctx)
+    if args.list:
+        for t in tasks:
+            print(f"{t.id:<15} {'admin' if t.needs_root else '':<6} {'recommended' if t.recommended else '':<12} {t.name}")
+        return 0
+    if args.run:
+        wanted = set(_split(args.run))
+        chosen = [t for t in tasks if t.id in wanted or ("recommended" in wanted and t.recommended)]
+        if not chosen:
+            print("No matching tasks. See `msc optimize --list`.")
+            return 2
+        app.run_optimize(chosen, ctx)
+        return 0
+    if not interactive_ok():
+        print("Use `msc optimize --list` and `msc optimize --run ID,ID` when not in a terminal.")
+        return 2
+    import curses
+    screen = app.OptimizeScreen(ctx)
+    if curses.wrapper(screen.loop) == "run":
+        app.run_optimize(screen.chosen(), ctx)
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="msc", description=__doc__,
-                                epilog="Run `msc` with no arguments to scan and browse results interactively.")
+                                epilog="Run `msc` with no arguments for the interactive menu.")
     p.add_argument("--version", action="version", version=f"macsmartcleaner {__version__}")
     p.add_argument("--rules-file", help="extra JSON rules (default ~/.config/macsmartcleaner/rules.json)")
     p.add_argument("-q", "--quiet", action="store_true")
@@ -252,6 +341,26 @@ def build_parser() -> argparse.ArgumentParser:
     c.add_argument("-i", "--interactive", action="store_true", help="confirm each item")
     c.set_defaults(func=cmd_clean)
 
+    sub.add_parser("menu", help="interactive home screen (default)").set_defaults(func=cmd_menu)
+
+    sm = sub.add_parser("smart", help="Smart Clean: clear caches & junk, skipping apps you have open")
+    sm.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
+    sm.add_argument("-n", "--dry-run", action="store_true", help="show what would be cleaned")
+    sm.set_defaults(func=cmd_smart)
+
+    st = sub.add_parser("status", help="live system status: CPU, GPU, memory, disk, network, battery")
+    st.add_argument("--once", action="store_true", help="print one snapshot instead of the live view")
+    st.set_defaults(func=cmd_status)
+
+    su = sub.add_parser("startup", help="see and disable apps that start automatically")
+    su.add_argument("--list", action="store_true", help="print the list instead of the interactive view")
+    su.set_defaults(func=cmd_startup)
+
+    op = sub.add_parser("optimize", help="maintenance tasks: DNS, memory, Finder/Dock, Spotlight...")
+    op.add_argument("--list", action="store_true", help="list available tasks")
+    op.add_argument("--run", action="append", metavar="IDS", help="run tasks by id ('recommended' for the defaults)")
+    op.set_defaults(func=cmd_optimize)
+
     sub.add_parser("rules", help="list all rules").set_defaults(func=cmd_rules)
     e = sub.add_parser("explain", help="explain one rule")
     e.add_argument("rule")
@@ -275,7 +384,8 @@ def main(argv: Optional[Sequence[str]] = None, ctx: Optional[Context] = None) ->
     parser = build_parser()
     args = parser.parse_args(argv)
     if not args.command:
-        args = parser.parse_args(["scan"] + list(argv or sys.argv[1:]))
+        default = "menu" if interactive_ok() else "scan"
+        args = parser.parse_args([default] + list(argv if argv is not None else sys.argv[1:]))
     if sys.platform != "darwin" and ctx is None:
         print("warning: macsmartcleaner is built for macOS; results elsewhere are partial.", file=sys.stderr)
     try:

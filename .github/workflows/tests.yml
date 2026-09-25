@@ -16,4 +16,9 @@ jobs:
       - name: check shell scripts
         run: sh -n install.sh && sh -n msc
       - name: smoke test real scan
-        run: ./msc scan --no-discover --no-projects && ./msc clean --dry-run
+        run: |
+          ./msc scan --report --no-discover --no-projects
+          ./msc clean --dry-run
+          ./msc smart --dry-run
+          ./msc status --once
+          ./msc optimize --list

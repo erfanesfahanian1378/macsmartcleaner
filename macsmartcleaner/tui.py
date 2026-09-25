@@ -13,9 +13,10 @@ import os
 import shutil
 import sys
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 from . import cleaner, discover, ui
+from .tuikit import Canvas, wrap
 from .context import Context
 from .discover import Hog
 from .rules import Action, Safety
@@ -25,7 +26,7 @@ from .sizes import human
 TABS = ["Junk & caches", "Projects", "Big folders"]
 HELP = [
     ("↑↓", "move"), ("space", "select"), ("tab", "lists"), ("a", "safe"),
-    ("c", "+caution"), ("n", "none"), ("o", "Finder"), ("d", "delete"), ("q", "quit"),
+    ("c", "+caution"), ("n", "none"), ("o", "Finder"), ("d", "delete"), ("r", "rescan"), ("q", "back"),
 ]
 
 
@@ -82,7 +83,7 @@ def _items_from(ctx: Context, findings: Sequence[Finding], projects: Sequence[Fi
     return items
 
 
-class Browser:
+class Browser(Canvas):
     def __init__(self, ctx: Context, items: List[Item]):
         self.ctx = ctx
         self.items = items
@@ -100,53 +101,10 @@ class Browser:
         return [i for i in self.items if i.selected]
 
     # ---- curses ------------------------------------------------------------
-    def _init_colors(self) -> None:
-        curses.start_color()
-        try:
-            curses.use_default_colors()
-            bg = -1
-        except curses.error:
-            bg = curses.COLOR_BLACK
-        rich = curses.COLORS >= 256
-        pairs = {
-            1: curses.COLOR_GREEN, 2: curses.COLOR_YELLOW, 3: curses.COLOR_MAGENTA, 4: curses.COLOR_CYAN,
-            5: curses.COLOR_WHITE, 6: curses.COLOR_RED, 7: 244 if rich else curses.COLOR_WHITE,
-        }
-        for n, color in pairs.items():
-            curses.init_pair(n, color, bg)
-        curses.init_pair(8, curses.COLOR_BLACK, curses.COLOR_CYAN)   # selected tab / cursor
-        curses.init_pair(9, curses.COLOR_WHITE, curses.COLOR_RED)    # danger button
-        self.grad: List[int] = []
-        if rich:
-            for k in range(8):
-                r, g, b = ui._gradient(k / 7)
-                curses.init_pair(20 + k, ui._rgb_to_256(r, g, b), bg)
-                self.grad.append(20 + k)
-        else:
-            self.grad = [4]
-
     def tag_attr(self, tag: str) -> int:
         n = {"safe": 1, "likely-junk": 1, "caution": 2, "orphaned": 2, "stale": 2, "review": 3,
              "data": 3, "info": 4, "system": 4}.get(tag, 7)
         return curses.color_pair(n)
-
-    def put(self, y: int, x: int, text: str, attr: int = 0) -> None:
-        h, w = self.scr.getmaxyx()
-        if y >= h or x >= w:
-            return
-        try:
-            self.scr.addnstr(y, x, text, max(0, w - x - (1 if y == h - 1 else 0)), attr)
-        except curses.error:
-            pass
-
-    def bar(self, y: int, x: int, frac: float, width: int) -> None:
-        filled = int(round(frac * width))
-        for i in range(width):
-            if i < filled:
-                pair = self.grad[min(len(self.grad) - 1, i * len(self.grad) // max(width, 1))]
-                self.put(y, x + i, "█", curses.color_pair(pair))
-            else:
-                self.put(y, x + i, "·", curses.color_pair(7))
 
     def draw(self) -> None:
         s = self.scr
@@ -222,7 +180,7 @@ class Browser:
             self.put(dy + 1, 2 + len(item.title), f"· {item.tag}", self.tag_attr(item.tag))
             lines: List[str] = []
             for d in item.details:
-                lines.extend(_wrap(d, w - 4) if d else [""])
+                lines.extend(wrap(d, w - 4) if d else [""])
             for k, line in enumerate(lines[: detail_h - 1]):
                 self.put(dy + 2 + k, 2, line, curses.color_pair(7) if k else 0)
 
@@ -260,35 +218,12 @@ class Browser:
         if tm:
             lines.append("• Time Machine snapshots: macOS will ask for your password")
         lines += ["", "Caches are rebuilt automatically by the apps that use them."]
-        h, w = self.scr.getmaxyx()
-        bw = min(w - 4, max(len(l) for l in lines) + 8)
-        bh = len(lines) + 4
-        y0, x0 = (h - bh) // 2, (w - bw) // 2
-        win = curses.newwin(bh, bw, y0, x0)
-        win.bkgd(" ", curses.color_pair(0))
-        win.box()
-        for k, line in enumerate(lines):
-            try:
-                win.addnstr(1 + k, 3, line, bw - 5, curses.A_BOLD if k == 0 else 0)
-            except curses.error:
-                pass
-        try:
-            win.addstr(bh - 2, 3, " y  Yes, clean ", curses.color_pair(9) | curses.A_BOLD)
-            win.addstr(bh - 2, 21, " n  Cancel ", curses.color_pair(8))
-        except curses.error:
-            pass
-        win.refresh()
-        while True:
-            k = self.scr.getch()
-            if k in (ord("y"), ord("Y")):
-                return True
-            if k in (ord("n"), ord("N"), 27, ord("q")):
-                return False
+        return self.dialog(lines, yes="Yes, clean")
 
     def loop(self, scr) -> str:
         self.scr = scr
         curses.curs_set(0)
-        self._init_colors()
+        self.init_colors()
         scr.keypad(True)
         while True:
             self.draw()
@@ -344,21 +279,10 @@ class Browser:
                     self.flash = "Nothing selected - press space on an item first."
                 elif self.confirm():
                     return "clean"
+            elif k == ord("r"):
+                return "rescan"
             elif k == curses.KEY_RESIZE:
                 pass
-
-
-def _wrap(text: str, width: int) -> List[str]:
-    words, lines, line = text.split(), [], ""
-    for word in words:
-        if line and len(line) + 1 + len(word) > width:
-            lines.append(line)
-            line = word
-        else:
-            line = f"{line} {word}" if line else word
-    if line:
-        lines.append(line)
-    return lines
 
 
 def perform_cleanup(ctx: Context, items: List[Item]) -> Tuple[int, List[str]]:
@@ -426,17 +350,37 @@ def perform_cleanup(ctx: Context, items: List[Item]) -> Tuple[int, List[str]]:
     return freed, problems
 
 
-def run(ctx: Context, findings: Sequence[Finding], projects: Sequence[Finding], hogs: Sequence[Hog]) -> int:
+Rescan = Callable[[], Tuple[Sequence[Finding], Sequence[Finding], Sequence[Hog]]]
+
+
+def run(ctx: Context, findings: Sequence[Finding], projects: Sequence[Finding], hogs: Sequence[Hog],
+        rescan: Optional[Rescan] = None) -> int:
+    """Browse results; ``rescan`` (r key, or after a cleanup) re-runs the scan and rebuilds the list."""
     items = _items_from(ctx, findings, projects, hogs)
     browser = Browser(ctx, items)
     os.environ.setdefault("ESCDELAY", "25")  # snappy ESC key
     while True:
         action = curses.wrapper(browser.loop)
-        if action != "clean":
-            return 0
-        perform_cleanup(ctx, items)
-        try:
-            input("\n  Press Enter to go back to the list (or Ctrl-C to quit) ")
-        except (EOFError, KeyboardInterrupt):
-            print()
-            return 0
+        if action == "clean":
+            perform_cleanup(ctx, items)
+            prompt = ("\n  Press Enter to go back to the list, r + Enter to rescan everything "
+                      if rescan else "\n  Press Enter to go back to the list ")
+            try:
+                answer = input(prompt).strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                return 0
+            if answer != "r" or rescan is None:
+                continue
+            action = "rescan"
+        if action == "rescan":
+            if rescan is None:
+                continue
+            findings, projects, hogs = rescan()
+            items[:] = _items_from(ctx, findings, projects, hogs)
+            tab = browser.tab
+            browser = Browser(ctx, items)
+            browser.tab = tab
+            browser.flash = "Rescanned - list is up to date."
+            continue
+        return 0

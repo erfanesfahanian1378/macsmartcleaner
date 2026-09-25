@@ -17,7 +17,7 @@ import shutil
 import sys
 import threading
 import time
-from typing import List, Optional, Sequence, Tuple
+from typing import Optional, Sequence, Tuple
 
 from .sizes import human
 
@@ -270,3 +270,53 @@ def make_reporter(stages: Sequence[Tuple[str, int]], quiet: bool = False, counte
     if color_enabled(sys.stderr):
         return LiveReporter(stages, counter_label=counter_label)
     return PlainReporter()
+
+
+class Spinner:
+    """One animated line for a single task:  ⠹ Flushing DNS cache  0:02  ->  ✔ Flush DNS cache  0:02"""
+
+    def __init__(self, label: str, stream=None, quiet: bool = False):
+        self.label = label
+        self.stream = stream or sys.stdout
+        self.live = not quiet and color_enabled(self.stream)
+        self.quiet = quiet
+        self.t0 = time.time()
+        self.result: Optional[Tuple[bool, str]] = None
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+
+    def __enter__(self):
+        if self.live:
+            self.stream.write("\033[?25l")
+            self._thread.start()
+        return self
+
+    def done(self, ok: bool, message: str = "") -> None:
+        self.result = (ok, message)
+
+    def _loop(self) -> None:
+        frame = 0
+        while not self._stop.wait(0.08):
+            frame += 1
+            spin = SPINNER[frame % len(SPINNER)]
+            shimmer = "".join(
+                (BOLD if abs(i - frame % (len(self.label) + 10) + 5) <= 1 else "") + ch + RESET
+                for i, ch in enumerate(self.label))
+            self.stream.write(f"\r\033[K  {CYAN}{spin}{RESET} {shimmer}  {DIM}{fmt_elapsed(time.time() - self.t0)}{RESET}")
+            self.stream.flush()
+
+    def __exit__(self, exc_type, *_):
+        if self.live:
+            self._stop.set()
+            self._thread.join(timeout=1)
+            self.stream.write("\r\033[K\033[?25h")
+        ok, msg = self.result or (exc_type is None, "")
+        took = fmt_elapsed(time.time() - self.t0)
+        if self.quiet:
+            return
+        if self.live:
+            mark = f"{GREEN}✔{RESET}" if ok else f"\033[31m✖{RESET}"
+            self.stream.write(f"  {mark} {self.label}  {DIM}{took}{('  ' + msg) if msg else ''}{RESET}\n")
+        else:
+            self.stream.write(f"  [{'ok' if ok else 'failed'}] {self.label} ({took}){(': ' + msg) if msg else ''}\n")
+        self.stream.flush()

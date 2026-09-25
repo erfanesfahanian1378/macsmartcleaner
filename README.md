@@ -1,37 +1,38 @@
 # macsmartcleaner
 
-**Find out why "System Data" is eating your Mac's disk, and safely get the space back.**
+**Get your disk space back, see what's slowing your Mac down, and keep it lean, all from one
+friendly terminal app.**
 
 Open *System Settings > General > Storage* on almost any Mac and you'll find a grey
 **System Data** bar that can reach 100, 200 or 300+ GB. macOS won't tell you what's in it.
-`macsmartcleaner` (`msc`) will. It is a free, open-source command-line tool:
+`macsmartcleaner` (`msc`) will. It's a free, open-source toolkit with an animated terminal interface:
 
-- **Scans** about 60 known sources of hidden bloat plus anything big it doesn't recognise
-- **Explains** each item in plain English: what it is and what happens if you delete it
-- **Cleans** only what is safe, asks before deleting, and has a dry-run mode
-- **Can't delete your stuff**: Documents, Photos, iCloud, Mail, Keychains and system folders are hard-blocked
+| | Tool | What it does |
+|---|---|---|
+| ✦ | **Smart Clean** | One key clears caches and junk. It **skips the caches of apps you have open**, so nothing glitches |
+| ◎ | **Deep Scan** | Finds everything using space (about 60 known junk sources plus anything big it doesn't recognise). Browse it, read what each item is, pick what goes |
+| ↑ | **Startup Items** | Every app and helper that launches automatically. Disable or remove them, and spot leftovers from deleted apps |
+| ⚙ | **Optimize** | Flush DNS, free inactive memory, fix a stuck Finder/Dock, rebuild Spotlight and "Open With", and more |
+| ◔ | **System Status** | A live dashboard: CPU per core, GPU, memory pressure, swap, disk, network, battery, thermal state, top processes |
 
-No sign-up, no background app, no telemetry, no dependencies. Nothing leaves your Mac.
+It **can't delete your stuff**: Documents, Photos, iCloud, Mail, Keychains and system folders are
+hard-blocked, and everything asks before it acts. No sign-up, no background app, no telemetry,
+no dependencies. Nothing leaves your Mac.
 
 ```
-$ msc scan --report
+                                      ┏┳┓┏━┓┏━╸   macsmartcleaner
+                                      ┃┃┃┗━┓┃     keep your Mac lean
+                                      ╹ ╹┗━┛┗━╸   Apple M2 Pro
 
-Xcode & Apple dev  (41.8 GB)
-     28.1 GB  safe     xcode-deriveddata        ~/Library/Developer/Xcode/DerivedData
-     11.2 GB  safe     xcode-device-support     ~/Library/Developer/Xcode/iOS DeviceSupport/17.5 (21F79)
-      2.5 GB  safe     simulator-unavailable    6 simulator(s) for runtimes no longer installed
+                    ▶ ✦  Smart Clean     Clear caches & junk, skipping open apps        1
+                      ◎  Deep Scan       See everything using space, pick what goes     2
+                      ↑  Startup Items   Apps & helpers that launch automatically       3
+                      ⚙  Optimize        DNS, memory, Finder/Dock, Spotlight & more     4
+                      ◔  System Status   Live CPU, GPU, memory, disk, network           5
+                      ×  Quit                                                           q
 
-Docker, VMs & emulators  (38.0 GB)
-     38.0 GB  caution  docker                   ~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw
-
-Summary
-  safe        54.3 GB   msc clean                    (caches, logs - regenerated automatically)
-  caution     61.0 GB   msc clean --tier caution     (re-downloads / slower rebuilds)
-  review      72.4 GB   msc clean --only <rule-id>   (backups, models, archives - your call)
-
-  ! Time Machine: 14 local snapshot(s) - size hidden by APFS, often tens of GB.
+       CPU  ███········· 23%          RAM  ████████···· 11.8/16 GB     Disk ███████████· 188 GB free
 ```
-<sub>(example output)</sub>
 
 ---
 
@@ -71,6 +72,18 @@ Just type:
 ```bash
 msc
 ```
+
+The animated home screen opens. Choose a tool with the arrow keys and Enter, or press its number.
+Every tool is also a direct command (`msc smart`, `msc scan`, `msc startup`, `msc optimize`, `msc status`).
+
+### ✦ Smart Clean: `msc smart`
+
+The quick, safe option. It scans only the known-safe caches and logs, and checks which apps are running.
+Anything that belongs to an open app (Chrome, Slack, Spotify, Xcode…) is **left alone** and listed,
+so you can quit those apps and run it again. Then it shows a size chart of what it will clean, asks once
+(`Clean it now? [Y/n]`), and cleans with a live progress bar.
+
+### ◎ Deep Scan: `msc scan`
 
 **1. It scans, with live progress.** You can always see it working: an animated spinner, a
 percentage bar, files counted, GB scanned, elapsed time, and the folder it's reading right now.
@@ -121,6 +134,58 @@ selected if you pick it yourself, and big folders go to the Trash so you can und
 **3. It cleans, with live progress,** then shows how much space you got back
 (`✨ Freed 104.2 GB  free space 188 GB → 292 GB`) and takes you back to the list.
 
+**Refresh any time:** press `r` in the list to rescan everything, or answer `r` after a cleanup.
+The list is rebuilt from a fresh scan, so you see the real current state.
+
+### ↑ Startup Items: `msc startup`
+
+Lists everything that starts automatically: your **Login Items**, your **Launch Agents**,
+agents installed for **all users**, and **system daemons**. Each one shows whether it's running,
+enabled or disabled, with advice:
+
+- **broken**: the app it belongs to is gone. A leftover, safe to remove.
+- **auto-updater**: optional. Most apps still update themselves when you open them.
+- **system daemon**: keep it if you use the app (VPNs, drivers, security tools).
+
+`space` enables or disables the highlighted item, `x` removes it (the launch file goes to the Trash,
+so you can undo it), `o` shows it in Finder and `r` refreshes the list. System items ask for your password.
+Apple's own services are never listed or touched.
+
+### ⚙ Optimize: `msc optimize`
+
+A checklist of maintenance tasks, each explained, each using Apple's own tools. The recommended
+ones are pre-selected:
+
+| Task | Fixes |
+|---|---|
+| Flush DNS cache | websites not loading after network changes |
+| Free up inactive memory | apps waiting for RAM (`purge`) |
+| Run macOS maintenance scripts | log rotation and temp cleanup that normally runs overnight |
+| Reset Quick Look thumbnails | wrong or missing previews in Finder |
+| Rebuild the "Open With" list | duplicate or deleted apps in right-click > Open With |
+| Clear font caches | garbled or missing fonts |
+| Restart Dock, Finder & menu bar | a stuck Dock, frozen Finder, unresponsive menu bar icons |
+| Check the startup disk | read-only file system check |
+| Rebuild Spotlight index | Spotlight not finding files, or a bloated index |
+
+Press Enter and each task runs with its own animated spinner and a ✔/✖ result.
+From scripts: `msc optimize --list` and `msc optimize --run dns,quicklook` (or `--run recommended`).
+
+### ◔ System Status: `msc status`
+
+A live dashboard that refreshes every second:
+
+- **CPU**: total, a history sparkline, a bar for every core (labelled **P**/**E** on Apple Silicon) and load averages
+- **Memory**: used of total, split into app, wired, compressed and cached. It shows **memory pressure**
+  (green, yellow or red, like Activity Monitor) and swap
+- **GPU**: utilisation with history, renderer load and GPU memory (Apple Silicon and most Intel Macs)
+- **Storage**: used and free, plus live disk throughput
+- **Network**: live download and upload speed with sparklines
+- **Battery & thermal**: charge, charging state, time left, and whether the Mac is being throttled
+- **Top processes** by CPU (`c`) or memory (`m`)
+
+No admin password needed. `msc status --once` prints a one-off snapshot.
+
 Prefer plain commands, for scripts or a quick check?
 
 ```bash
@@ -167,8 +232,13 @@ Run `msc rules` for the full list, or `msc explain <rule-id>` for the details of
 ## All commands
 
 ```bash
-msc                                         # scan + interactive browser
+msc                                         # animated home menu
+msc smart [--dry-run] [--yes]               # Smart Clean
+msc scan                                    # Deep Scan + interactive browser (r = rescan)
 msc scan --report [--html FILE] [--json FILE]  # text/web/JSON report instead
+msc startup [--list]                        # startup items
+msc optimize [--list] [--run IDS]           # maintenance tasks
+msc status [--once]                         # live system dashboard
 msc scan --projects ~/code ~/Unity          # tell it where your projects live
 msc clean                                   # safe tier
 msc clean --tier caution --skip maven       # include "caution" items, except Maven
@@ -196,6 +266,14 @@ or restart. Space freed from Time Machine snapshots can take a few minutes to sh
 Keychains, `/System`, swap (`/private/var/vm`) and macOS databases. A restart clears swap and
 many temporary files on its own.
 
+**Will Optimize make my Mac faster?** Honestly: macOS manages memory and caches well on its own.
+These tasks fix specific problems (stale DNS, broken previews, a stuck Finder, a bloated
+Spotlight index) and give a quick boost when memory is tight. Disabling startup items you don't
+need is what makes the most lasting difference to startup time and free memory.
+
+**Why does Startup Items ask to control "System Events"?** That's how macOS lets apps read your
+Login Items list. Allow it once, or deny it and you'll still see all the launch agents and daemons.
+
 **Is it a replacement for CleanMyMac etc.?** It focuses on one thing, explaining and shrinking
 System Data, and it shows you exactly what it will do. It's free and the code is open.
 
@@ -207,6 +285,11 @@ scanner.py  expands locations, measures real disk usage in parallel, never count
 discover.py heuristics for the unknown: big uncovered folders, orphaned app data, project build output
 cleaner.py  selects by safety level -> safety check on every path -> delete or run the tool's own
             cleaner (brew cleanup, docker prune, tmutil…) -> re-measures what was actually freed
+smart.py    Smart Clean: safe rules only, skips caches of running apps
+startup.py  login items + launch agents/daemons: detect, explain, enable/disable/remove
+optimize.py maintenance tasks built on Apple's own tools (dscacheutil, purge, qlmanage, mdutil…)
+sysinfo.py  live metrics: mach per-core CPU, vm_stat, sysctl, ioreg (GPU), pmset, netstat, iostat
+app.py      the animated home menu, status dashboard, startup and optimize screens
 ui.py       live progress: spinner, gradient percentage bar, live counters (plain lines when not a terminal)
 tui.py      the interactive curses browser: select, explain, reveal in Finder, delete
 safety.py   hard deny-list: home, Documents, Photos, Keychains, iCloud, /System and any parent
