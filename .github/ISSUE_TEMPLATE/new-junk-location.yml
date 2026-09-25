@@ -1,0 +1,36 @@
+name: New junk location
+description: Tell us about a folder that wastes space and msc doesn't know yet
+labels: [new-rule]
+body:
+  - type: input
+    id: path
+    attributes:
+      label: Path
+      description: Where is it? Use ~ for your home folder.
+      placeholder: ~/Library/Application Support/SomeApp/Cache
+    validations:
+      required: true
+  - type: input
+    id: size
+    attributes:
+      label: How big was it?
+      placeholder: 12 GB
+  - type: input
+    id: app
+    attributes:
+      label: Which app or tool creates it?
+    validations:
+      required: true
+  - type: dropdown
+    id: safety
+    attributes:
+      label: What happens if it's deleted?
+      options:
+        - Rebuilt automatically, no downside (safe)
+        - Re-downloaded or slow to rebuild (caution)
+        - Could contain something a person wants to keep (review)
+        - Not sure
+  - type: textarea
+    id: notes
+    attributes:
+      label: Anything else? (official cleanup command, docs link...)

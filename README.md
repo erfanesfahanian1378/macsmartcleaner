@@ -1,107 +1,179 @@
-# macsmartcleaner (`msc`)
+# macsmartcleaner
 
-Finds out **why macOS "System Data" is huge** and cleans it safely. It has no
-dependencies and runs on the `python3` that ships with macOS / Xcode Command Line Tools (3.9+).
+**Find out why "System Data" is eating your Mac's disk, and safely get the space back.**
+
+Open *System Settings > General > Storage* on almost any Mac and you'll find a grey
+**System Data** bar that can reach 100, 200 or 300+ GB. macOS won't tell you what's in it.
+`macsmartcleaner` (`msc`) will. It is a free, open-source command-line tool:
+
+- **Scans** about 60 known sources of hidden bloat plus anything big it doesn't recognise
+- **Explains** each item in plain English: what it is and what happens if you delete it
+- **Cleans** only what is safe, asks before deleting, and has a dry-run mode
+- **Can't delete your stuff**: Documents, Photos, iCloud, Mail, Keychains and system folders are hard-blocked
+
+No sign-up, no background app, no telemetry, no dependencies. Nothing leaves your Mac.
+
+```
+$ msc scan
+
+Xcode & Apple dev  (41.8 GB)
+     28.1 GB  safe     xcode-deriveddata        ~/Library/Developer/Xcode/DerivedData
+     11.2 GB  safe     xcode-device-support     ~/Library/Developer/Xcode/iOS DeviceSupport/17.5 (21F79)
+      2.5 GB  safe     simulator-unavailable    6 simulator(s) for runtimes no longer installed
+
+Docker, VMs & emulators  (38.0 GB)
+     38.0 GB  caution  docker                   ~/Library/Containers/com.docker.docker/Data/vms/0/data/Docker.raw
+
+Summary
+  safe        54.3 GB   msc clean                    (caches, logs - regenerated automatically)
+  caution     61.0 GB   msc clean --tier caution     (re-downloads / slower rebuilds)
+  review      72.4 GB   msc clean --only <rule-id>   (backups, models, archives - your call)
+
+  ! Time Machine: 14 local snapshot(s) - size hidden by APFS, often tens of GB.
+```
+<sub>(example output)</sub>
+
+---
+
+## Install
+
+Requires macOS 11 or newer. Paste this into **Terminal** (Applications > Utilities > Terminal):
 
 ```bash
-git clone https://github.com/erfanesfahanian1378/macsmartcleaner && cd macsmartcleaner
-./msc doctor                      # check permissions first
-./msc scan --html ~/Desktop/storage.html   # read-only: see what is using space
-./msc clean --dry-run             # see what the safe cleanup would do
-./msc clean                       # do it (asks before deleting)
+curl -fsSL https://raw.githubusercontent.com/erfanesfahanian1378/macsmartcleaner/main/install.sh | sh
 ```
 
-Optional: `pip3 install --user .` puts `msc` on your PATH.
+If your Mac asks to install the **Command Line Tools**, click Install and run the command again.
+They provide the Python that `msc` runs on.
 
-> **Grant Full Disk Access first**: System Settings > Privacy & Security > Full Disk Access >
-> add Terminal (or iTerm / VS Code / whatever you run it from), then restart that app.
-> Without it macOS hides large parts of `~/Library` and the numbers come out too low.
-> Run `sudo ./msc scan` to also measure `/Library` and `/private/var`.
+<details>
+<summary>Other ways to install</summary>
 
-## Where 300+ GB of "System Data" usually hides
+```bash
+# with pipx / pip
+pipx install git+https://github.com/erfanesfahanian1378/macsmartcleaner
+# or run straight from a clone, no install
+git clone https://github.com/erfanesfahanian1378/macsmartcleaner && cd macsmartcleaner && ./msc scan
+```
+To update, run the installer again. To uninstall: `curl -fsSL https://raw.githubusercontent.com/erfanesfahanian1378/macsmartcleaner/main/install.sh | sh -s -- --uninstall`
+</details>
 
-| Suspect | Typical size | Rule |
+### Give Terminal "Full Disk Access" (important)
+
+macOS hides a lot of `~/Library` from Terminal, which makes the numbers come out too low.
+Open **System Settings > Privacy & Security > Full Disk Access**, turn on **Terminal**
+(or iTerm, VS Code, whatever you use), and restart that app. Then run `msc doctor` to confirm.
+
+## Use it in 3 steps
+
+```bash
+msc scan                 # 1. look: shows everything, changes nothing
+msc clean --dry-run      # 2. preview: what the safe cleanup would delete
+msc clean                # 3. clean: shows the plan and asks "Delete X GB now? [y/N]"
+```
+
+Want a nicer view? `msc scan --html ~/Desktop/storage.html && open ~/Desktop/storage.html`
+creates a report page with an explanation for every item.
+
+### How safe is "safe"?
+
+Every item has a safety level:
+
+| Level | What it means | Cleaned by |
 |---|---|---|
-| Time Machine **local snapshots** (APFS hides their size) | 20-200 GB | `tm-snapshots` |
-| Docker Desktop / OrbStack virtual disk | 20-150 GB | `docker`, `orbstack` |
-| Xcode DerivedData, device support, simulators & runtimes | 10-100 GB | `xcode-*`, `simulator-*` |
-| AI models: Hugging Face, Ollama, LM Studio, torch | 10-200 GB | `huggingface-*`, `ollama`, `lmstudio`, `torch-hub` |
-| Package caches: npm, pnpm, yarn, pip, uv, conda, Gradle, Cargo, Go, CocoaPods, Homebrew | 5-60 GB | one rule each |
-| Game dev: Unreal DDC and vault, Unity caches & editors, Godot templates | 5-100 GB | `unreal-*`, `unity-*`, `godot` |
-| iPhone backups and firmware | 10-200 GB | `ios-backups`, `ios-updates` |
-| App caches and Electron apps (Slack, Discord, VS Code, Teams) | 2-30 GB | `user-caches`, `electron-caches` |
-| Leftovers from uninstalled apps in `Containers` / `Application Support` | varies | found by discovery |
-| Project build output: `node_modules`, Unity `Library/`, Unreal `Intermediate/`, `.venv`, Rust `target/` | 5-100 GB | found by discovery |
+| 🟢 **safe** | Caches and logs. Apps rebuild them automatically | `msc clean` |
+| 🟡 **caution** | Rebuildable but costly: re-downloads, slow rebuilds, Trash, local Time Machine snapshots | `msc clean --tier caution` |
+| 🟣 **review** | Might be something you want: iPhone backups, AI models, app archives | only when you name it: `msc clean --only ios-backups` |
+| 🔵 **info** | Shown so you know. Cleaned from the app that owns it (VMs, Ollama models…) | the app itself |
+
+Big folders that no rule knows about are listed with a best guess (**likely-junk**,
+**orphaned** = its app is gone, **stale** = untouched for months, **data**, **system**) but
+are **never deleted automatically**. If you decide one should go,
+`msc trash "<path>"` moves it to the Trash so you can still undo it.
+
+## What it finds
+
+| Where the space hides | Typical size | Who has it |
+|---|---|---|
+| **Time Machine local snapshots** (their size isn't shown anywhere) | 20-200 GB | anyone with Time Machine |
+| iPhone/iPad backups and firmware downloads | 10-200 GB | anyone with an iPhone/iPad |
+| App caches: browsers, Spotify, Slack, Discord, Teams, VS Code, Adobe… | 2-30 GB | everyone |
+| Logs, crash reports, Mail attachment copies, Trash | 1-10 GB | everyone |
+| Leftovers from apps you already deleted | varies | everyone |
+| Xcode DerivedData, device support, simulators & runtimes | 10-100 GB | iOS/macOS developers |
+| Docker / OrbStack / Colima disks, VMs, Android emulators | 20-150 GB | developers |
+| npm, pnpm, yarn, bun, pip, uv, conda, Homebrew, Gradle, Maven, Cargo, Go, CocoaPods, Flutter caches | 5-60 GB | developers |
+| Hugging Face, Ollama, LM Studio, PyTorch, Whisper models | 10-200 GB | AI/ML folks |
+| Unreal DerivedDataCache & vault, Unity caches & editors, Godot templates, Steam shader cache | 5-100 GB | game developers |
+| `node_modules`, Unity `Library/`, Unreal `Intermediate/`, `.venv`, Rust `target/`… in idle projects | 5-100 GB | developers |
+
+Run `msc rules` for the full list, or `msc explain <rule-id>` for the details of one rule.
+
+## All commands
+
+```bash
+msc scan [--html FILE] [--json FILE]        # full report
+msc scan --projects ~/code ~/Unity          # tell it where your projects live
+msc clean                                   # safe tier
+msc clean --tier caution --skip maven       # include "caution" items, except Maven
+msc clean --only tm-snapshots               # remove local Time Machine snapshots (asks for your password)
+msc clean --only huggingface-models -i      # confirm each item one by one
+msc clean --projects --older-than 60        # build folders of projects untouched for 60+ days
+msc clean --min-age 7                       # keep cache items used in the last week
+msc trash "<path>"                          # move a reviewed folder to the Trash
+msc schedule install                        # automatic weekly "safe" cleanup (Sundays 11:00)
+msc schedule remove
+msc rules | msc explain <id> | msc doctor
+sudo msc scan                               # also measures /Library and /private/var
+```
+
+## FAQ
+
+**Will this break my apps?** The *safe* tier only removes caches and logs, which apps are
+designed to rebuild. An app may be a little slower on its first launch afterwards. For the
+cleanest result, quit big apps (Xcode, Slack, VS Code…) first; `msc` warns you if they're running.
+
+**My System Data didn't drop right away.** macOS updates that number lazily. Wait a minute,
+or restart. Space freed from Time Machine snapshots can take a few minutes to show up.
+
+**What won't it touch?** Your personal folders, Photos, Mail, Messages, iCloud Drive,
+Keychains, `/System`, swap (`/private/var/vm`) and macOS databases. A restart clears swap and
+many temporary files on its own.
+
+**Is it a replacement for CleanMyMac etc.?** It focuses on one thing, explaining and shrinking
+System Data, and it shows you exactly what it will do. It's free and the code is open.
 
 ## How it works
 
 ```
- rules.py  ── catalog of ~60 known junk locations: path/glob, safety tier, how to clean, why
-    │
- scanner.py ── expand globs & probes (tmutil, simctl, getconf) ─► measure in parallel
-    │           (real allocated blocks, hard links once, never crosses volumes)
-    │           ─► de-duplicate: a specific rule (~/Library/Caches/Homebrew) is carved out
-    │              of a generic one (~/Library/Caches) so nothing is counted or deleted twice
-    │
- discover.py ── heuristics for what no rule knows:
-    │             • big folders in ~/Library, dot-dirs, /Library, /private/var
-    │               classified as likely-junk / orphaned (no installed app matches) /
-    │               stale (untouched for 6-12+ months) / data / system
-    │             • project build artifacts, detected by marker files
-    │               (package.json, Assets+ProjectSettings, *.uproject, Cargo.toml, pyvenv.cfg…)
-    │
- cleaner.py ── select by tier ─► safety.check() every path ─► delete / run tool's own cleaner
-    │           ─► re-measure what was actually freed ─► log to ~/.local/state/macsmartcleaner/
- safety.py  ── hard deny-list: home, Documents, Photos, Keychains, iCloud, /System… and any
-                parent of them; symlinked parents are resolved so nothing can escape
+rules.py    catalog of known junk: location, safety level, how to clean, plain-English explanation
+scanner.py  expands locations, measures real disk usage in parallel, never counts anything twice
+discover.py heuristics for the unknown: big uncovered folders, orphaned app data, project build output
+cleaner.py  selects by safety level -> safety check on every path -> delete or run the tool's own
+            cleaner (brew cleanup, docker prune, tmutil…) -> re-measures what was actually freed
+safety.py   hard deny-list: home, Documents, Photos, Keychains, iCloud, /System and any parent
+            of them; symlinks can't be used to escape
 ```
 
-### Safety tiers
+Every cleanup is logged to `~/.local/state/macsmartcleaner/history.jsonl`.
 
-| Tier | Meaning | Cleaned by |
-|---|---|---|
-| **safe** | Pure caches and logs. Regenerated automatically | `msc clean` |
-| **caution** | Regenerable but costly (re-downloads, slow rebuilds), local TM snapshots, Trash | `msc clean --tier caution` |
-| **review** | Could be real data: device backups, AI models, Xcode archives, emulators | only `msc clean --only <id>` |
-| info | Shown so you know, but cleaned through the owning app (VMs, Ollama, simulator runtimes) | the app itself |
+### Add your own rules
 
-Folders the discovery step flags are never deleted automatically. After you look
-at one, `msc trash <path>` moves it to the Trash so you can undo it.
-
-## Commands
-
-```bash
-msc scan [--projects ~/code ~/Unity] [--json f] [--html f] [--no-discover]
-msc clean                                   # safe tier
-msc clean --tier caution --skip gradle-dists
-msc clean --only tm-snapshots               # delete local Time Machine snapshots (asks for sudo)
-msc clean --only huggingface-models -i      # confirm each model one by one
-msc clean --projects ~/code --older-than 60 # node_modules/Library/target… of idle projects
-msc clean --min-age 7                       # keep cache items used in the last week
-msc rules / msc explain docker
-msc trash "~/Library/Application Support/SomeOldApp"
-msc schedule install                        # weekly safe cleanup via launchd (Sundays 11:00)
-```
-
-### Your own rules
-
-Add to `~/.config/macsmartcleaner/rules.json`:
+Create `~/.config/macsmartcleaner/rules.json`:
 
 ```json
-[{"id": "my-renders", "name": "Blender render cache", "category": "Custom",
+[{"id": "blender-cache", "name": "Blender render cache", "category": "Custom",
   "safety": "safe", "action": "delete-contents", "paths": ["~/renders/cache"]}]
 ```
 
-## Things `msc` deliberately won't touch
+## Contributing
 
-- `/private/var/vm` (swap and sleep image). A restart shrinks it.
-- `/private/var/db` and the Spotlight index. If they're huge, a restart or a Safe Mode boot trims them.
-- Mail, Messages, Photos and iCloud Drive. Use their own settings (Optimize Mac Storage, Messages > Keep for 1 year).
+Know another folder that bloats System Data? Please
+[open an issue](../../issues/new?template=new-junk-location.yml) or send a pull request.
+Adding a rule is usually 5 lines. See [CONTRIBUTING.md](CONTRIBUTING.md).
 
-## Development
+## Disclaimer
 
-```bash
-python3 -m unittest discover -s tests -t .
-```
-
-The tests build a fake Mac home directory in a temp folder, so they run on macOS and Linux.
+This tool deletes files. It is built to be careful: dry-run, confirmation, safety tiers and a
+hard deny-list. Still, keep a backup, as you should anyway. Provided under the [MIT License](LICENSE),
+without warranty.

@@ -1,4 +1,9 @@
 #!/bin/sh
-# Run without installing:  ./msc scan
-DIR="$(cd "$(dirname "$0")" && pwd)"
+# Launcher: works from a git checkout (./msc scan) or when symlinked onto your PATH.
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in /*) SELF="$LINK" ;; *) SELF="$(dirname "$SELF")/$LINK" ;; esac
+done
+DIR="$(cd "$(dirname "$SELF")" && pwd)"
 PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m macsmartcleaner "$@"

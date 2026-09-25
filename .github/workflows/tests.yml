@@ -13,5 +13,7 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: python -m unittest discover -s tests -t . -v
+      - name: check shell scripts
+        run: sh -n install.sh && sh -n msc
       - name: smoke test real scan
         run: ./msc scan --no-discover --no-projects && ./msc clean --dry-run
