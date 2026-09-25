@@ -1,0 +1,4 @@
+#!/bin/sh
+# Run without installing:  ./msc scan
+DIR="$(cd "$(dirname "$0")" && pwd)"
+PYTHONPATH="$DIR${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m macsmartcleaner "$@"

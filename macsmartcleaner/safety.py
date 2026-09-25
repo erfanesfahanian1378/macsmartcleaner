@@ -1,0 +1,78 @@
+"""Last line of defence: every path is checked here right before deletion.
+
+A bug in a rule or glob must never be able to delete your home folder,
+Documents, Photos library, keychains or anything owned by the OS.
+"""
+from __future__ import annotations
+
+import os
+from typing import List
+
+from .context import Context
+
+# Deleting exactly these (or any parent of these) is always refused.
+PROTECTED_IN_HOME = [
+    "", "Library", "Library/Application Support", "Library/Caches", "Library/Containers",
+    "Library/Group Containers", "Library/Preferences", "Library/Logs", "Library/Developer",
+    "Library/Developer/Xcode", "Library/Mobile Documents", "Library/CloudStorage",
+    "Documents", "Desktop", "Downloads", "Pictures", "Movies", "Music", "Public", "Applications",
+    ".config", ".ssh", ".cache", ".npm", ".gradle", ".cargo", ".android",
+]
+PROTECTED_ABS = [
+    "/", "/System", "/Library", "/Applications", "/Users", "/Users/Shared", "/private", "/private/var",
+    "/private/var/folders", "/usr", "/bin", "/sbin", "/opt", "/Volumes", "/etc", "/var", "/tmp",
+    "/Library/Caches", "/Library/Logs", "/Library/Developer",
+]
+# Nothing inside these is ever touched.
+NEVER_INSIDE_HOME = [
+    "Library/Keychains", "Library/Mobile Documents", "Library/CloudStorage", "Library/Messages",
+    "Library/Mail", "Library/Photos", "Library/Preferences", "Library/Accounts", "Library/Cookies",
+    "Library/Safari", ".ssh", ".gnupg", "Pictures/Photos Library.photoslibrary",
+]
+NEVER_INSIDE_ABS = ["/System", "/usr", "/bin", "/sbin", "/etc", "/private/etc", "/Applications"]
+# Deletion is only allowed somewhere under one of these.
+ALLOWED_ABS = [
+    "/Library/Caches", "/Library/Logs", "/private/var/log", "/private/var/folders",
+    "/Library/Developer/CoreSimulator/Caches", "/Users/Shared/UnrealEngine/Launcher/VaultCache",
+]
+
+
+class UnsafePath(Exception):
+    pass
+
+
+def _norm(p: str) -> str:
+    # Resolve symlinks in the parent (so a symlinked parent can't escape) but
+    # keep the final component: deleting a symlink removes only the link.
+    parent, name = os.path.split(os.path.abspath(p))
+    return os.path.join(os.path.realpath(parent), name) if name else os.path.realpath(parent)
+
+
+def _within(child: str, parent: str) -> bool:
+    child, parent = child.lower(), parent.rstrip("/").lower() or "/"
+    return child == parent or child.startswith(parent + "/") or parent == "/"
+
+
+def check(path: str, ctx: Context) -> str:
+    """Return the normalized path if it is OK to delete, else raise UnsafePath."""
+    p = _norm(path)
+    home = os.path.realpath(ctx.home)
+
+    def absolute(x: str) -> str:
+        return os.path.realpath(ctx.path(x)) if ctx.root != "/" else os.path.realpath(x)
+
+    protected: List[str] = [os.path.join(home, r) if r else home for r in PROTECTED_IN_HOME]
+    protected += [absolute(a) for a in PROTECTED_ABS]
+    for prot in protected:
+        if _within(prot.rstrip("/") or "/", p):  # p is prot itself or a parent of it
+            raise UnsafePath(f"refusing to delete protected location {p}")
+
+    never = [os.path.join(home, r) for r in NEVER_INSIDE_HOME] + [absolute(a) for a in NEVER_INSIDE_ABS]
+    for n in never:
+        if _within(p, n):
+            raise UnsafePath(f"refusing to delete inside protected area {n}")
+
+    allowed = [home] + [absolute(a) for a in ALLOWED_ABS]
+    if not any(_within(p, a) and p.lower() != a.lower() for a in allowed):
+        raise UnsafePath(f"{p} is outside the areas this tool may clean")
+    return p

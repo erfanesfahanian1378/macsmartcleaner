@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "macsmartcleaner"
+version = "0.1.0"
+description = "Find and safely clean what's inflating macOS 'System Data'"
+readme = "README.md"
+requires-python = ">=3.9"
+dependencies = []
+
+[project.scripts]
+msc = "macsmartcleaner.cli:main"
+
+[tool.setuptools]
+packages = ["macsmartcleaner"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
