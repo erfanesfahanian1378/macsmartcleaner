@@ -568,7 +568,8 @@ def cmd_diagnose(args, ctx: Context) -> int:
             continue
         unreadable = r.usage.errors and not ctx.is_root
         size = human(r.usage.bytes) + ("+" if unreadable else "")
-        known += r.usage.bytes
+        if not any(o is not r and o.usage and r.path.startswith(o.path.rstrip("/") + "/") for o in rows):
+            known += r.usage.bytes  # pieces inside another piece (cloud folders in ~/Library) count once
         print(f"    {size:>10}  {r.label:<38} {_c(r.advice, '2')}")
     print(_c(f"    {human(known):>10}  total measured" + ("  (+ = partly hidden: run with sudo)" if not ctx.is_root else ""),
              "1"))
