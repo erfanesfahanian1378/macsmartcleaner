@@ -102,6 +102,26 @@ def apfs_volumes(ctx: Context) -> Tuple[int, int, List[Tuple[str, str, int]]]:
     return parse_apfs_list(res.stdout.encode())
 
 
+_JXA_IMPORTANT = ('ObjC.import("Foundation"); var u = $.NSURL.fileURLWithPath("/"); '
+                  'var k = "NSURLVolumeAvailableCapacityForImportantUsageKey"; '
+                  'var r = u.resourceValuesForKeysError([k], null); String(r.objectForKey(k).js)')
+
+
+def available_like_settings(ctx: Context) -> Optional[int]:
+    """Free space the way System Settings/Finder show it (includes purgeable space)."""
+    res = ctx.run(["osascript", "-l", "JavaScript", "-e", _JXA_IMPORTANT], timeout=20, as_user=False)
+    try:
+        return int(float(res.stdout.strip())) if res is not None and res.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def purgeable(ctx: Context, really_free: int) -> Optional[int]:
+    """Space macOS calls 'available' but that is still in use - mostly local snapshots."""
+    shown = available_like_settings(ctx)
+    return None if shown is None else max(0, shown - really_free)
+
+
 def parse_snapshots(plist_bytes: bytes) -> List[str]:
     try:
         doc = plistlib.loads(plist_bytes)

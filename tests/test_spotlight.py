@@ -104,3 +104,13 @@ class TestDiagnose(FakeMac):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestPurgeable(FakeMac):
+    def test_purgeable_is_settings_minus_real_free(self):
+        import subprocess as sp
+        self.ctx.which = lambda n: "/usr/bin/" + n
+        self.ctx.runner = lambda cmd, t: sp.CompletedProcess(cmd, 0, "393260000000\n", "")
+        self.assertEqual(diagnose.purgeable(self.ctx, 17_100_000_000), 376_160_000_000)
+        self.ctx.runner = lambda cmd, t: sp.CompletedProcess(cmd, 1, "", "error")
+        self.assertIsNone(diagnose.purgeable(self.ctx, 1))

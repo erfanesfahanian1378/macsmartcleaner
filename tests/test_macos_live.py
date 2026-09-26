@@ -135,6 +135,13 @@ class TestLiveSystem(unittest.TestCase):
         with self.assertRaises(safety.UnsafePath):
             safety.check("/Applications/Safari.app", self.ctx, trash=True)
 
+    def test_purgeable_query_works(self):
+        from macsmartcleaner import diagnose
+        shown = diagnose.available_like_settings(self.ctx)
+        self.assertIsNotNone(shown, "NSURLVolumeAvailableCapacityForImportantUsageKey via JXA failed")
+        self.assertGreater(shown, 0)
+        print(f"\n  settings-style available: {shown / 1e9:.1f} GB")
+
     def test_gpu_query_does_not_fail(self):
         g = sysinfo.parse_ioreg_gpu(sysinfo._cmd(["ioreg", "-r", "-d", "1", "-w", "0", "-c", "IOAccelerator"]))
         self.assertIn("util", g)

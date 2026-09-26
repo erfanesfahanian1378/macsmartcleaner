@@ -541,6 +541,14 @@ def cmd_diagnose(args, ctx: Context) -> int:
                     "Preboot": "boot files", "Recovery": "recovery system"}.get(roles.split(",")[0], "")
             flag = "33" if roles.startswith("Update") and used > 5e9 else "0"
             print(f"    {_c(f'{human(used):>9}', flag)}  {name:<28} {_c(hint, '2')}")
+    purg = diagnose.purgeable(ctx, free) if free else None
+    if purg is not None:
+        print(f"\n  Free space shown in System Settings: {human(free + purg)}   really free: {human(free)}")
+        flag = "31;1" if purg > 20e9 else "0"
+        print("  " + _c(f"Purgeable (held by snapshots, released only when macOS needs it): {human(purg)}", flag))
+        if purg > 20e9 and snaps:
+            print(_c("  ! That space is pinned by local snapshots: files you delete stay on disk until the "
+                     "snapshots go.\n    Free it now: sudo msc clean --only tm-snapshots", "33"))
     tm = [s for s in snaps if "com.apple.TimeMachine" in s]
     other = [s for s in snaps if s not in tm]
     print(f"\n  Snapshots on your data volume: {len(snaps)}  "
