@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- **Spotlight Doctor** (`msc spotlight`): measures the real index, lists Search Privacy exclusions, flags
+  folders that make Spotlight loop (cloud storage, dev/VM/model folders), **watches which folders
+  Spotlight reads** (fs_usage), excludes folders safely (with a config backup), rebuilds, and an hourly
+  **guard** that rebuilds if the index passes a limit. For indexes that grow to hundreds of GB again after
+  being deleted
+- **System Data breakdown** (`msc diagnose`): every APFS volume in the container (stuck Update volume),
+  every snapshot (Time Machine and backup apps), indexes, swap, logs, caches and the biggest folders
+- Menu: System Data Doctor
+
 **Audit against CleanMyMac X (verified on a real Mac in CI)**
 - **Uninstaller** (`msc uninstall`): apps with size and last-opened date. Removes an app with all its
   files (matched by bundle id) to the Trash; quits it first; admin items with your password

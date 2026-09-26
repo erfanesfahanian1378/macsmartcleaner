@@ -253,8 +253,17 @@ def cmd_menu(args, ctx: Context) -> int:
     scan_args = build_parser().parse_args(["scan"])
     scan_args.quiet = args.quiet
     scan_args.rules_file = args.rules_file
+    doctor_args = build_parser().parse_args(["spotlight"])
+    doctor_args.quiet = True
+
+    def doctor() -> int:
+        diag_args = build_parser().parse_args(["diagnose"])
+        diag_args.quiet = False
+        cmd_diagnose(diag_args, ctx)
+        return cmd_spotlight(doctor_args, ctx)
+
     return app.run(ctx, deep_scan=lambda: cmd_scan(scan_args, ctx),
-                   smart_clean=lambda: smart.run(ctx, _rules(ctx, args)))
+                   smart_clean=lambda: smart.run(ctx, _rules(ctx, args)), doctor=doctor)
 
 
 def cmd_smart(args, ctx: Context) -> int:
@@ -401,6 +410,171 @@ def cmd_uninstall(args, ctx: Context) -> int:
     return 0
 
 
+def _c(text: str, code: str) -> str:
+    return report.c(text, code)
+
+
+def cmd_spotlight(args, ctx: Context) -> int:
+    from . import spotlight
+    if args.guard_check:
+        _ok, msg = spotlight.guard_check(ctx, parse_size(args.max))
+        print(msg)
+        return 0
+    actions = []
+    if args.exclude or args.include:
+        actions.append(spotlight.set_exclusions(ctx, add=args.exclude or [], remove=args.include or []))
+    if args.off:
+        actions.append(spotlight.set_indexing(ctx, on=False))
+    if args.on:
+        actions.append(spotlight.set_indexing(ctx, on=True))
+    if args.guard:
+        actions.append(spotlight.install_guard(ctx, parse_size(args.guard)))
+    if args.no_guard:
+        actions.append(spotlight.remove_guard(ctx))
+
+    if not args.quiet:
+        ui.banner("spotlight doctor - why is the search index so big?")
+    excluded = spotlight.exclusions(ctx)
+    with ui.Spinner("Measuring the Spotlight index and the usual suspects", quiet=args.quiet) as spin, \
+            sizes.cache_session():
+        size = spotlight.index_size(ctx)
+        parts = spotlight.store_breakdown(ctx) if size else []
+        user_idx = spotlight.user_index_size(ctx)
+        suspects = spotlight.find_suspects(ctx, excluded or [])
+        spin.done(True, "")
+
+    print(f"\n  Indexing:            {spotlight.status(ctx)}")
+    if size is None:
+        print(f"  System index:        {_c('? - run with sudo to measure', '33')}")
+    else:
+        flag = "31;1" if size > 50e9 else "33" if size > 10e9 else "32"
+        verdict = ("runaway - Spotlight is stuck re-indexing something" if size > 50e9 else
+                   "too big" if size > 10e9 else "normal")
+        print(f"  System index:        {_c(human(size), flag)}  ({verdict})")
+        for name, b in parts[:6]:
+            if b > 100e6:
+                print(f"      {human(b):>9}  {name}")
+    print(f"  Per-user index:      {human(user_idx)}  (~/Library/Metadata/CoreSpotlight)")
+    if excluded is None:
+        print(f"  Excluded folders:    {_c('? - run with sudo to read', '33')}")
+    else:
+        print(f"  Excluded folders:    {len(excluded)}" + ("" if not excluded else ""))
+        for e in excluded[:10]:
+            print(f"      {e}")
+
+    todo = [s for s in suspects if not s.excluded]
+    if suspects:
+        print("\n  " + _c("Folders that typically make Spotlight loop:", "1"))
+        for s in suspects:
+            mark = _c("excluded", "32") if s.excluded else _c("INDEXED ", "33")
+            print(f"    {mark}  {human(s.bytes):>9}  {s.files:>10,} files  {discover._display(ctx, s.path)}")
+            print(_c(f"                                              {s.reason}", "2"))
+
+    if args.watch:
+        print()
+        with ui.Spinner(f"Watching what Spotlight reads for {args.watch} s (keep using your Mac normally)",
+                        quiet=args.quiet) as spin:
+            ok, top, msg = spotlight.watch(ctx, args.watch)
+            spin.done(ok, msg)
+        if ok:
+            if top:
+                print("\n  " + _c("Where Spotlight spent its time (file accesses):", "1"))
+                for folder, n in top:
+                    print(f"    {n:>7,}  {folder}")
+                print(_c("  The folder at the top is your culprit if it's something you never search in.", "2"))
+            else:
+                print("  Spotlight was idle - run again while the index is growing.")
+
+    for ok, msg in actions:
+        print(("  " + _c("✔", "32") if ok else "  " + _c("✖", "31")) + " " + msg)
+
+    if args.auto_exclude:
+        if not todo:
+            print("\n  Nothing to exclude - all suspects are already excluded.")
+        else:
+            ok, msg = spotlight.set_exclusions(ctx, add=[s.path for s in todo])
+            print(("  " + _c("✔", "32") if ok else "  " + _c("✖", "31")) + " " + msg)
+            if ok and size and size > 10e9:
+                ok2, msg2 = spotlight.rebuild(ctx)
+                print(("  " + _c("✔", "32") if ok2 else "  " + _c("✖", "31")) + " " + msg2)
+    if args.rebuild:
+        ok, msg = spotlight.rebuild(ctx)
+        print(("  " + _c("✔", "32") if ok else "  " + _c("✖", "31")) + " " + msg)
+
+    if not (args.auto_exclude or args.exclude or args.rebuild or args.watch or args.guard):
+        print("\n  " + _c("What to do", "1;4"))
+        steps = ["`sudo msc spotlight --watch 60` while the index is growing shows which folders it reads"]
+        if todo:
+            steps.append(f"`sudo msc spotlight --auto-exclude` stops indexing the {len(todo)} folder(s) marked INDEXED "
+                         "(they still open normally, they just don't appear in Spotlight search) and rebuilds once")
+        steps.append("`sudo msc spotlight --guard 20GB` rebuilds automatically if the index ever passes 20 GB again")
+        for i, step in enumerate(steps, 1):
+            print(f"    {i}. {step}")
+        print("    Last resort: `sudo msc spotlight --off` turns Spotlight indexing off (search and Mail search stop working)")
+    return 0
+
+
+def cmd_diagnose(args, ctx: Context) -> int:
+    from . import diagnose
+    if not args.quiet:
+        ui.banner("system data breakdown")
+    progress = [0, 0]
+
+    def on_dir(_d, f, b):
+        progress[0] += f
+        progress[1] += b
+
+    with ui.Spinner("Measuring everything that ends up in 'System Data'", quiet=args.quiet) as spin, \
+            sizes.cache_session():
+        rows = diagnose.measure_pieces(ctx, on_dir)
+        big = diagnose.biggest_children([ctx.path(p) for p in ("/Library/Application Support", "/private/var/db",
+                                                               "~/Library", "/Library")], on_dir=on_dir)
+        spin.done(True, f"{progress[0]:,} files, {human(progress[1])}")
+    cap, free, vols = diagnose.apfs_volumes(ctx)
+    snaps = diagnose.snapshots(ctx)
+
+    if vols:
+        print("\n  " + _c("Your disk (APFS container)", "1;4") + f"   {human(cap)} total, {human(free)} free")
+        for name, roles, used in vols:
+            hint = {"Data": "your files + most System Data", "System": "macOS itself (read-only)",
+                    "VM": "swap", "Update": "staged macOS update - large = stuck update",
+                    "Preboot": "boot files", "Recovery": "recovery system"}.get(roles.split(",")[0], "")
+            flag = "33" if roles.startswith("Update") and used > 5e9 else "0"
+            print(f"    {_c(f'{human(used):>9}', flag)}  {name:<28} {_c(hint, '2')}")
+    tm = [s for s in snaps if "com.apple.TimeMachine" in s]
+    other = [s for s in snaps if s not in tm]
+    print(f"\n  Snapshots on your data volume: {len(snaps)}  "
+          f"({len(tm)} Time Machine, {len(other)} other)" if snaps is not None else "")
+    for s in other[:8]:
+        print(_c(f"    {s}", "2"))
+    if snaps:
+        print(_c("    Snapshot sizes are hidden by APFS; they hold deleted/changed data. "
+                 "Time Machine ones: `msc clean --only tm-snapshots`.", "2"))
+        if other:
+            print(_c("    Others belong to backup apps (e.g. Carbon Copy Cloner) - remove them in that app.", "2"))
+
+    print("\n  " + _c("Pieces of System Data", "1;4"))
+    known = 0
+    for r in sorted(rows, key=lambda r: -(r.usage.bytes if r.usage else -1)):
+        if r.usage is None or not r.usage.exists:
+            continue
+        unreadable = r.usage.errors and not ctx.is_root
+        size = human(r.usage.bytes) + ("+" if unreadable else "")
+        known += r.usage.bytes
+        print(f"    {size:>10}  {r.label:<38} {_c(r.advice, '2')}")
+    print(_c(f"    {human(known):>10}  total measured" + ("  (+ = partly hidden: run with sudo)" if not ctx.is_root else ""),
+             "1"))
+
+    for parent, kids in big.items():
+        if kids and kids[0][1] > 1e9:
+            print("\n  " + _c(f"Biggest in {discover._display(ctx, parent)}", "1"))
+            for name, b in kids:
+                if b > 200e6:
+                    print(f"    {human(b):>10}  {name}")
+    print("\n  Next: `sudo msc lens /` to browse the whole disk by size, `sudo msc spotlight` for the index.")
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="msc", description=__doc__,
                                 epilog="Run `msc` with no arguments for the interactive menu.")
@@ -459,6 +633,23 @@ def build_parser() -> argparse.ArgumentParser:
     un.add_argument("-n", "--dry-run", action="store_true", help="show what would be removed")
     un.add_argument("-y", "--yes", action="store_true", help="don't ask for confirmation")
     un.set_defaults(func=cmd_uninstall)
+
+    sp = sub.add_parser("spotlight", help="Spotlight Doctor: why the search index is huge, and fix it")
+    sp.add_argument("--watch", type=int, metavar="SECONDS", help="record which folders Spotlight reads (sudo)")
+    sp.add_argument("--exclude", action="append", metavar="FOLDER", help="stop indexing a folder (sudo)")
+    sp.add_argument("--include", action="append", metavar="FOLDER", help="index a folder again (sudo)")
+    sp.add_argument("--auto-exclude", action="store_true", help="exclude all loop suspects, then rebuild (sudo)")
+    sp.add_argument("--rebuild", action="store_true", help="erase and rebuild the index (sudo)")
+    sp.add_argument("--guard", metavar="SIZE", help="hourly check: rebuild if the index passes SIZE, e.g. 20GB")
+    sp.add_argument("--no-guard", action="store_true", help="remove the guard")
+    sp.add_argument("--off", action="store_true", help="turn Spotlight indexing off (last resort)")
+    sp.add_argument("--on", action="store_true", help="turn Spotlight indexing back on")
+    sp.add_argument("--guard-check", action="store_true", help=argparse.SUPPRESS)
+    sp.add_argument("--max", default="20GB", help=argparse.SUPPRESS)
+    sp.set_defaults(func=cmd_spotlight)
+
+    dg = sub.add_parser("diagnose", help="System Data breakdown: volumes, snapshots, indexes, swap, logs")
+    dg.set_defaults(func=cmd_diagnose)
 
     su = sub.add_parser("startup", help="see and disable apps that start automatically")
     su.add_argument("--list", action="store_true", help="print the list instead of the interactive view")

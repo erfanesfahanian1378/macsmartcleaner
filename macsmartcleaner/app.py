@@ -28,6 +28,7 @@ MENU = [
     ("scan", "◎", "Deep Scan", "See everything using space, pick what goes"),
     ("lens", "◧", "Space Lens", "Browse any folder by size, drill down, trash"),
     ("uninstall", "⌫", "Uninstaller", "Remove apps with all their leftovers"),
+    ("doctor", "✚", "System Data Doctor", "Where System Data hides; fix runaway Spotlight"),
     ("startup", "↑", "Startup Items", "Apps & helpers that launch automatically"),
     ("optimize", "⚙", "Optimize", "DNS, memory, Finder/Dock, Spotlight & more"),
     ("status", "◔", "System Status", "Live CPU, GPU, memory, disk, network"),
@@ -587,7 +588,8 @@ def _pause(msg: str = "Press Enter to go back to the menu") -> None:
         pass
 
 
-def run(ctx: Context, deep_scan: Callable[[], int], smart_clean: Callable[[], int]) -> int:
+def run(ctx: Context, deep_scan: Callable[[], int], smart_clean: Callable[[], int],
+        doctor: Optional[Callable[[], int]] = None) -> int:
     os.environ.setdefault("ESCDELAY", "25")
     monitor = sysinfo.Monitor(ctx.home).start()
     menu = Menu(ctx, monitor)
@@ -603,6 +605,11 @@ def run(ctx: Context, deep_scan: Callable[[], int], smart_clean: Callable[[], in
                 _pause()
             elif action == "scan":
                 deep_scan()
+            elif action == "doctor" and doctor is not None:
+                if sys.stdout.isatty():
+                    sys.stdout.write("\033[H\033[2J")
+                doctor()
+                _pause()
             elif action == "status":
                 curses.wrapper(StatusScreen(monitor).loop)
             elif action == "lens":

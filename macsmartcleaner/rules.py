@@ -229,7 +229,7 @@ BUILTIN_RULES: List[Rule] = [
       why="Application logs, crash and diagnostic reports.",
       impact="None; apps create new logs as needed."),
     R("system-logs", "System logs & diagnostic reports", APPS, S, CON, keep_dirs=True, min_age_days=1,
-      paths=("/Library/Logs", "/private/var/log/DiagnosticMessages"),
+      paths=("/Library/Logs", "/private/var/log/DiagnosticMessages"), exclude=("macsmartcleaner*",),
       needs_root=True, why="System-wide crash and diagnostic reports.", impact="None."),
     R("system-caches", "System-wide caches", APPS, C, CON,
       paths=("/Library/Caches",), needs_root=True, min_age_days=3,

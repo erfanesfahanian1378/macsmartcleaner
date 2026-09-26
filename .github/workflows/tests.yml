@@ -31,3 +31,15 @@ jobs:
           time ./msc scan --report --min-size 0 --no-projects --hog-min 200MB
           ./msc clean --dry-run --tier caution
           ./msc uninstall --dry-run "$(./msc uninstall --list | head -1 | cut -c 23-54 | xargs)" || true
+      - name: macOS admin checks (runner has passwordless sudo)
+        if: runner.os == 'macOS'
+        run: |
+          sudo ./msc diagnose
+          sudo ./msc spotlight --watch 10
+          mkdir -p ~/msc-spotlight-test
+          sudo ./msc spotlight --exclude ~/msc-spotlight-test
+          sudo /usr/libexec/PlistBuddy -c "Print :Exclusions" /System/Volumes/Data/.Spotlight-V100/VolumeConfiguration.plist
+          sudo ./msc spotlight --include ~/msc-spotlight-test
+          sudo /usr/libexec/PlistBuddy -c "Print :Exclusions" /System/Volumes/Data/.Spotlight-V100/VolumeConfiguration.plist || true
+          sudo ./msc spotlight --guard-check --max 1TB
+          mdutil -s /System/Volumes/Data

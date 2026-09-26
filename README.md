@@ -141,6 +141,33 @@ selected if you pick it yourself, and big folders go to the Trash so you can und
 **Refresh any time:** press `r` in the list to rescan everything, or answer `r` after a cleanup.
 The list is rebuilt from a fresh scan, so you see the real current state.
 
+### ✚ System Data Doctor: `sudo msc diagnose` and `sudo msc spotlight`
+
+**When System Data is huge and comes back after cleaning**, the cause is usually one thing growing
+out of control. The Doctor accounts for System Data piece by piece:
+- **Your disk:** every volume in your disk's APFS container (a stuck "Update" volume shows up here) and every snapshot, including backup apps'.
+- **Search indexes:** the Spotlight and CoreSpotlight indexes.
+- **Memory and logs:** swap, logs, and system caches.
+- **Hiding places:** the biggest folders in each system area.
+
+**Runaway Spotlight index.** A normal `.Spotlight-V100` is a few GB. If yours is tens or hundreds
+of GB and **comes back after you delete it**, Spotlight is stuck re-indexing something. Deleting
+the folder only restarts the loop. Instead:
+
+```bash
+sudo msc spotlight                 # index size, what's excluded, which suspect folders are still indexed
+sudo msc spotlight --watch 60      # records which folders Spotlight is actually reading: the culprit
+sudo msc spotlight --auto-exclude  # stop indexing the suspects (cloud folders, caches, VMs, dev folders), rebuild once
+sudo msc spotlight --exclude ~/Library/CloudStorage   # or exclude exactly what --watch showed
+sudo msc spotlight --guard 20GB    # hourly check: rebuild automatically if it ever passes 20 GB again
+```
+
+The usual culprits are **OneDrive/Dropbox/Google Drive folders** (`~/Library/CloudStorage`: indexing
+waits on the cloud provider, which can time out and make Spotlight retry forever), and folders with
+millions of constantly changing files (`node_modules`, Xcode build output, Docker/VM disks, model
+caches). Exclusions are the same list as System Settings > Spotlight > Search Privacy (a backup of
+the configuration is kept). Excluded folders still open normally; they just don't show up in Spotlight search.
+
 ### ◧ Space Lens: `msc lens [folder]`
 
 Starts in your home folder and lists what's inside, biggest first, with a bar and a percentage.
@@ -304,6 +331,8 @@ msc smart [--dry-run] [--yes] [--empty-trash]  # Smart Clean
 msc scan                                    # Deep Scan + interactive browser (r = rescan)
 msc scan --report [--html FILE] [--json FILE]  # text/web/JSON report instead
 msc lens [folder] [--list]                  # Space Lens (`/` = whole disk)
+sudo msc diagnose                           # System Data breakdown: volumes, snapshots, indexes, swap
+sudo msc spotlight [--watch 60] [--auto-exclude] [--guard 20GB]   # fix a runaway Spotlight index
 msc uninstall [--list] [APP…] [--dry-run]   # remove apps with their leftovers
 msc startup [--list]                        # startup items
 msc optimize [--list] [--run IDS]           # maintenance tasks
