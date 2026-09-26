@@ -36,6 +36,10 @@ PIECES: List[Tuple[str, str, str]] = [
     ("Developer tools & simulator runtimes", "/Library/Developer", "Xcode > Settings > Components removes runtimes"),
     ("Pending macOS updates", "/Library/Updates", "install or cancel pending updates in Software Update"),
     ("macOS update leftovers", DATA + "/macOS Install Data", "`sudo msc clean --only macos-install-leftovers`"),
+    ("Cloud files kept on this Mac (OneDrive, Dropbox, Google Drive)", "~/Library/CloudStorage",
+     "purgeable: macOS evicts them when space runs low; Finder right-click > Free Up Space / Remove Download"),
+    ("iCloud Drive files kept on this Mac", "~/Library/Mobile Documents",
+     "purgeable with 'Optimize Mac Storage' (System Settings > Apple Account > iCloud > Drive)"),
     ("Your Library", "~/Library", "`msc` Deep Scan breaks this down"),
     ("Hidden folders in your home", "~/.cache", "tool caches - `msc` Deep Scan covers these"),
 ]
