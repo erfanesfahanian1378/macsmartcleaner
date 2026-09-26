@@ -17,6 +17,17 @@ from .context import Context
 from .sizes import human
 from .tuikit import (CYAN, GREEN, GREY, INVERT, MAGENTA, RED, YELLOW, Canvas, pct, wrap)
 
+BIG_LOGO = [
+    "███╗   ███╗███████╗ ██████╗",
+    "████╗ ████║██╔════╝██╔════╝",
+    "██╔████╔██║███████╗██║     ",
+    "██║╚██╔╝██║╚════██║██║     ",
+    "██║ ╚═╝ ██║███████║╚██████╗",
+    "╚═╝     ╚═╝╚══════╝ ╚═════╝",
+]
+TAGLINE = "macsmartcleaner  ·  keep your Mac lean"
+SPARKS = "·✦*+⋆"
+
 LOGO = [
     "┏┳┓┏━┓┏━╸",
     "┃┃┃┗━┓┃  ",
@@ -28,7 +39,8 @@ MENU = [
     ("scan", "◎", "Deep Scan", "See everything using space, pick what goes"),
     ("lens", "◧", "Space Lens", "Browse any folder by size, drill down, trash"),
     ("uninstall", "⌫", "Uninstaller", "Remove apps with all their leftovers"),
-    ("doctor", "✚", "System Data Doctor", "Where System Data hides; fix runaway Spotlight"),
+    ("doctor", "✚", "Data Doctor", "Where System Data hides; Spotlight fixes"),
+    ("guard", "⛨", "Auto-Protect", "Hourly auto-fix: Spotlight & low disk space"),
     ("startup", "↑", "Startup Items", "Apps & helpers that launch automatically"),
     ("optimize", "⚙", "Optimize", "DNS, memory, Finder/Dock, Spotlight & more"),
     ("status", "◔", "System Status", "Live CPU, GPU, memory, disk, network"),
@@ -44,6 +56,50 @@ class Menu(Canvas):
         self.mon = monitor
         self.cur = 0
         self.frame = 0
+        self.intro_done = bool(os.environ.get("MSC_NO_INTRO"))
+
+    # ---- startup splash ------------------------------------------------------
+    def intro(self) -> None:
+        """~1.5 s: logo drawn by a glowing scan beam, tagline typed, warm-up bar. Any key skips."""
+        import random
+        self.intro_done = True
+        h, w = self.size()
+        lw = len(BIG_LOGO[0])
+        if h < len(BIG_LOGO) + 8 or w < lw + 4:
+            return
+        self.scr.timeout(33)
+        top = (h - len(BIG_LOGO) - 6) // 2
+        x0 = (w - lw) // 2
+        total = 48
+        rnd = random.Random(7)
+        for f in range(total):
+            self.scr.erase()
+            beam = int((f / 22) * (lw + 6)) - 3        # scan beam position (frames 0-22)
+            for i, line in enumerate(BIG_LOGO):
+                for j, ch in enumerate(line):
+                    if ch == " ":
+                        continue
+                    if j < beam:
+                        wave = ((j / lw) + f * 0.025) % 1.0
+                        attr = self.grad_attr(wave) | curses.A_BOLD
+                        if abs(j - beam) <= 1:
+                            attr = curses.color_pair(5) | curses.A_BOLD  # white-hot edge
+                        self.put(top + i, x0 + j, ch, attr)
+                    elif j < beam + 4 and rnd.random() < 0.35:
+                        self.put(top + i, x0 + j, rnd.choice(SPARKS), self.grad_attr(rnd.random()))
+            if f > 20:  # tagline types itself in
+                n = min(len(TAGLINE), (f - 20) * 3)
+                self.title(top + len(BIG_LOGO) + 1, (w - len(TAGLINE)) // 2, TAGLINE[:n], f)
+            if f > 26:  # warm-up bar
+                bw = min(40, w - 10)
+                frac = min(1.0, (f - 26) / (total - 30))
+                self.bar(top + len(BIG_LOGO) + 3, (w - bw) // 2, frac, bw)
+                label = ["reading disk", "checking caches", "measuring memory", "ready"][min(3, int(frac * 4))]
+                self.put(top + len(BIG_LOGO) + 4, (w - len(label)) // 2, label, curses.color_pair(GREY))
+            self.scr.refresh()
+            if self.scr.getch() != -1:
+                break
+        self.scr.timeout(90)
 
     def draw(self) -> None:
         s = self.scr
@@ -51,12 +107,13 @@ class Menu(Canvas):
         h, w = self.size()
         step = 2 if h >= len(MENU) * 2 + 12 else 1  # compact menu on short terminals
         top = max(1, (h - (len(MENU) * step + 12)) // 2)
-        # animated logo: gradient + a light sweeping across
+        # animated logo: a colour wave flows through it, with a light sweeping across
         for i, line in enumerate(LOGO):
             x0 = (w - 34) // 2
             for j, ch in enumerate(line):
                 glint = abs((j + i) - (self.frame % 30)) <= 1
-                attr = (curses.color_pair(5) | curses.A_BOLD) if glint else (self.grad_attr(j / len(line)) | curses.A_BOLD)
+                wave = ((j + i) / (len(line) + 3) + self.frame * 0.02) % 1.0
+                attr = (curses.color_pair(5) | curses.A_BOLD) if glint else (self.grad_attr(wave) | curses.A_BOLD)
                 self.put(top + i, x0 + j, ch, attr)
         self.title(top, (w - 34) // 2 + 12, "macsmartcleaner", self.frame)
         self.put(top + 1, (w - 34) // 2 + 12, "keep your Mac lean", curses.color_pair(GREY))
@@ -106,6 +163,8 @@ class Menu(Canvas):
         self.init_colors()
         scr.keypad(True)
         scr.timeout(90)
+        if not self.intro_done:
+            self.intro()
         while True:
             self.frame += 1
             self.draw()
@@ -479,6 +538,113 @@ def run_pending_startup(screen: StartupScreen, ctx: Context) -> None:
     screen.refresh_items()
 
 
+# =========================================================================== auto-protect
+
+INDEX_STEPS = [5, 10, 20, 50, 100]      # GB
+FREE_STEPS = [10, 20, 30, 50, 100, 150]  # GB
+
+
+class GuardScreen(Canvas):
+    def __init__(self, ctx: Context):
+        from . import guard
+        self.ctx = ctx
+        st = guard.status(ctx)
+        self.installed = st["installed"]
+        self.log = st["log"]
+        self.index_gb = _nearest(INDEX_STEPS, st["index_max"] / 1e9)
+        self.free_gb = _nearest(FREE_STEPS, st["min_free"] / 1e9)
+        self.flash = ""
+
+    def draw(self) -> None:
+        s = self.scr
+        s.erase()
+        h, w = self.size()
+        self.title(0, 1, "⛨ Auto-Protect", 0)
+        state = ("● ON", GREEN) if self.installed else ("○ off", GREY)
+        self.put(0, w - len(state[0]) - 2, state[0], curses.color_pair(state[1]) | curses.A_BOLD)
+        lines = [
+            "Every hour, in the background (even when msc is closed):",
+            "",
+            f"  1. If the Spotlight index is bigger than  [ {self.index_gb:>3} GB ]  it is rebuilt",
+            "     (stops a runaway re-indexing loop before it fills the disk)",
+            "",
+            f"  2. If free space drops below  [ {self.free_gb:>3} GB ]  it frees space:",
+            "     deletes Time Machine local snapshots (they pin deleted data),",
+            "     then cleans caches & logs, skipping apps you have open",
+        ]
+        for i, line in enumerate(lines):
+            self.put(2 + i, 2, line, curses.A_BOLD if i in (2, 5) else curses.color_pair(GREY) if i else 0)
+        y = 2 + len(lines) + 1
+        self.hline(y)
+        self.put(y + 1, 2, "Recent activity", curses.A_BOLD)
+        log = self.log or ["(nothing yet)" if self.installed else "(turn it on to start)"]
+        for i, line in enumerate(log[-(h - y - 5):]):
+            color = YELLOW if ("rebuild" in line or "freeing" in line or "erased" in line) else GREY
+            self.put(y + 2 + i, 4, line[: w - 6], curses.color_pair(color))
+        keys = [("enter", "turn on / update" if self.installed else "turn on"), ("[ ]", "Spotlight limit"),
+                ("- +", "free-space floor"), ("c", "check now")]
+        if self.installed:
+            keys.append(("x", "turn off"))
+        keys.append(("q", "back"))
+        self.footer(keys, self.flash)
+        s.refresh()
+
+    def loop(self, scr) -> Tuple[str, int, int]:
+        self.scr = scr
+        curses.curs_set(0)
+        self.init_colors()
+        scr.keypad(True)
+        while True:
+            self.draw()
+            k = scr.getch()
+            self.flash = ""
+            if k in (ord("q"), 27):
+                return ("back", 0, 0)
+            if k == ord("["):
+                self.index_gb = _step(INDEX_STEPS, self.index_gb, -1)
+            elif k == ord("]"):
+                self.index_gb = _step(INDEX_STEPS, self.index_gb, 1)
+            elif k in (ord("-"), ord("_")):
+                self.free_gb = _step(FREE_STEPS, self.free_gb, -1)
+            elif k in (ord("+"), ord("=")):
+                self.free_gb = _step(FREE_STEPS, self.free_gb, 1)
+            elif k in (10, 13, curses.KEY_ENTER, ord("i")):
+                return ("install", self.index_gb, self.free_gb)
+            elif k == ord("x") and self.installed:
+                if self.dialog(["Turn Auto-Protect off?", "", "The hourly check stops. Nothing else changes."],
+                               yes="Turn off"):
+                    return ("remove", 0, 0)
+            elif k == ord("c"):
+                return ("check", self.index_gb, self.free_gb)
+
+
+def _nearest(steps: List[int], value: float) -> int:
+    return min(steps, key=lambda s: abs(s - value))
+
+
+def _step(steps: List[int], cur: int, d: int) -> int:
+    i = steps.index(cur) if cur in steps else 0
+    return steps[max(0, min(len(steps) - 1, i + d))]
+
+
+def run_guard_action(action: str, index_gb: int, free_gb: int, ctx: Context) -> None:
+    """Run install/remove/check with admin rights (asks for the password once)."""
+    import subprocess
+    if sys.stdout.isatty():
+        sys.stdout.write("\033[H\033[2J")
+    ui.banner("auto-protect")
+    args = ["guard", action]
+    if action in ("install", "check"):
+        args += ["--index", f"{index_gb}GB", "--min-free", f"{free_gb}GB"]
+    if ctx.is_root:
+        from .cli import main as cli_main
+        cli_main(args, ctx=ctx)
+        return
+    pkg_parent = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    print(f"  {ui.BOLD}This needs your Mac password (it runs as a system service).{ui.RESET}")
+    subprocess.call(["sudo", "env", f"PYTHONPATH={pkg_parent}", sys.executable, "-m", "macsmartcleaner", *args])
+
+
 # =========================================================================== optimizer
 
 class OptimizeScreen(Canvas):
@@ -610,6 +776,13 @@ def run(ctx: Context, deep_scan: Callable[[], int], smart_clean: Callable[[], in
                     sys.stdout.write("\033[H\033[2J")
                 doctor()
                 _pause()
+            elif action == "guard":
+                while True:
+                    what, idx, free = curses.wrapper(GuardScreen(ctx).loop)
+                    if what == "back":
+                        break
+                    run_guard_action(what, idx, free, ctx)
+                    _pause("Press Enter to go back")
             elif action == "status":
                 curses.wrapper(StatusScreen(monitor).loop)
             elif action == "lens":

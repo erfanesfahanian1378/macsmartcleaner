@@ -428,9 +428,11 @@ def cmd_spotlight(args, ctx: Context) -> int:
     if args.on:
         actions.append(spotlight.set_indexing(ctx, on=True))
     if args.guard:
-        actions.append(spotlight.install_guard(ctx, parse_size(args.guard)))
+        from . import guard as guard_mod
+        actions.append(guard_mod.install(ctx, parse_size(args.guard), guard_mod.DEFAULT_MIN_FREE))
     if args.no_guard:
-        actions.append(spotlight.remove_guard(ctx))
+        from . import guard as guard_mod
+        actions.append(guard_mod.remove(ctx))
 
     if not args.quiet:
         ui.banner("spotlight doctor - why is the search index so big?")
@@ -584,6 +586,29 @@ def cmd_diagnose(args, ctx: Context) -> int:
     return 0
 
 
+def cmd_guard(args, ctx: Context) -> int:
+    from . import guard
+    if args.action == "check":
+        gctx = guard.context_for(args.user) if args.user else ctx
+        for line in guard.check(gctx, parse_size(args.index), parse_size(args.min_free), dry_run=args.dry_run):
+            print(line)
+        return 0
+    if args.action == "install":
+        ok, msg = guard.install(ctx, parse_size(args.index), parse_size(args.min_free))
+    elif args.action == "remove":
+        ok, msg = guard.remove(ctx)
+    else:
+        st = guard.status(ctx)
+        print(("Auto-Protect: ON" if st["installed"] else "Auto-Protect: off")
+              + (f"  (Spotlight > {human(st['index_max'])} -> rebuild, free < {human(st['min_free'])} -> free up space)"
+                 if st["installed"] else ""))
+        for line in st["log"]:
+            print("  " + line)
+        return 0
+    print(("✔ " if ok else "✖ ") + msg)
+    return 0 if ok else 1
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="msc", description=__doc__,
                                 epilog="Run `msc` with no arguments for the interactive menu.")
@@ -656,6 +681,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--guard-check", action="store_true", help=argparse.SUPPRESS)
     sp.add_argument("--max", default="20GB", help=argparse.SUPPRESS)
     sp.set_defaults(func=cmd_spotlight)
+
+    gd = sub.add_parser("guard", help="Auto-Protect: hourly check that rebuilds Spotlight / frees space")
+    gd.add_argument("action", choices=["install", "remove", "status", "check"])
+    gd.add_argument("--index", default="20GB", help="rebuild Spotlight above this index size (default 20GB)")
+    gd.add_argument("--min-free", default="50GB", help="free up space below this much free (default 50GB)")
+    gd.add_argument("--user", help=argparse.SUPPRESS)
+    gd.add_argument("-n", "--dry-run", action="store_true", help="check only: show what it would do")
+    gd.set_defaults(func=cmd_guard)
 
     dg = sub.add_parser("diagnose", help="System Data breakdown: volumes, snapshots, indexes, swap, logs")
     dg.set_defaults(func=cmd_diagnose)

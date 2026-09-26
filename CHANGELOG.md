@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+- **Auto-Protect** (`msc guard`, menu): hourly LaunchDaemon that rebuilds the Spotlight index above a
+  limit and, when free space drops below a floor, deletes Time Machine local snapshots and runs the safe
+  cleanup (skipping open apps); adjustable limits and an activity log in the menu
+- **Startup animation**: block-letter logo drawn by a glowing scan beam with sparkles, typed tagline and a
+  warm-up bar (any key skips, `MSC_NO_INTRO=1` turns it off); flowing colour wave on the menu logo
+
 - **Spotlight Doctor** (`msc spotlight`): measures the real index, lists Search Privacy exclusions, flags
   folders that make Spotlight loop (cloud storage, dev/VM/model folders), **watches which folders
   Spotlight reads** (fs_usage), excludes folders safely (with a config backup), rebuilds, and an hourly

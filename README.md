@@ -168,6 +168,19 @@ millions of constantly changing files (`node_modules`, Xcode build output, Docke
 caches). Exclusions are the same list as System Settings > Spotlight > Search Privacy (a backup of
 the configuration is kept). Excluded folders still open normally; they just don't show up in Spotlight search.
 
+### ⛨ Auto-Protect: `sudo msc guard install`
+
+An hourly background check (a system LaunchDaemon, so it works even when `msc` is closed):
+
+1. **Spotlight index too big** (default 20 GB): it's rebuilt, which stops a re-indexing loop before it fills the disk.
+2. **Free space too low** (default 50 GB):
+   - Time Machine local snapshots are deleted (they pin deleted data).
+   - Caches and logs are cleaned, skipping apps you have open.
+
+Turn it on, change both limits, see its recent activity and run a check from the menu (**Auto-Protect**), or:
+`sudo msc guard install --index 20GB --min-free 50GB`, `msc guard status`, `sudo msc guard check --dry-run`,
+`sudo msc guard remove`. Its log is `/Library/Logs/macsmartcleaner-guard.log`.
+
 ### ◧ Space Lens: `msc lens [folder]`
 
 Starts in your home folder and lists what's inside, biggest first, with a bar and a percentage.
