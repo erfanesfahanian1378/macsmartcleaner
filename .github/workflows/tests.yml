@@ -42,10 +42,12 @@ jobs:
           sudo ./msc spotlight --include ~/msc-spotlight-test
           sudo /usr/libexec/PlistBuddy -c "Print :Exclusions" /System/Volumes/Data/.Spotlight-V100/VolumeConfiguration.plist || true
           sudo ./msc spotlight --guard-check --max 1TB
-          sudo ./msc guard install --index 20GB --min-free 10GB
+          sudo ./msc guard on --index 20GB --min-free 10GB
           sudo launchctl print system/com.macsmartcleaner.guard | head -20
           sleep 5; ./msc guard status
           sudo ./msc guard check --dry-run
-          sudo ./msc guard remove
+          sudo ./msc guard off
+          if sudo launchctl print system/com.macsmartcleaner.guard >/dev/null 2>&1; then echo "guard still loaded"; exit 1; fi
+          test ! -e /Library/LaunchDaemons/com.macsmartcleaner.guard.plist
           ./msc guard status
           mdutil -s /System/Volumes/Data

@@ -168,7 +168,7 @@ millions of constantly changing files (`node_modules`, Xcode build output, Docke
 caches). Exclusions are the same list as System Settings > Spotlight > Search Privacy (a backup of
 the configuration is kept). Excluded folders still open normally; they just don't show up in Spotlight search.
 
-### ⛨ Auto-Protect: `sudo msc guard install`
+### ⛨ Auto-Protect: `sudo msc guard on` / `sudo msc guard off`
 
 An hourly background check (a system LaunchDaemon, so it works even when `msc` is closed):
 
@@ -177,9 +177,21 @@ An hourly background check (a system LaunchDaemon, so it works even when `msc` i
    - Time Machine local snapshots are deleted (they pin deleted data).
    - Caches and logs are cleaned, skipping apps you have open.
 
-Turn it on, change both limits, see its recent activity and run a check from the menu (**Auto-Protect**), or:
-`sudo msc guard install --index 20GB --min-free 50GB`, `msc guard status`, `sudo msc guard check --dry-run`,
-`sudo msc guard remove`. Its log is `/Library/Logs/macsmartcleaner-guard.log`.
+In the menu, **Auto-Protect** has an ON / OFF switch: **enter** turns it on (or saves new limits), **x**
+turns it off, **space** flips it. `[` `]` and `-` `+` change the two limits, and **c** runs a check now.
+The main menu shows whether it's ● ON or ○ off.
+
+From the command line:
+
+```bash
+sudo msc guard on --index 20GB --min-free 50GB   # turn on (or change the limits)
+sudo msc guard off                                # turn off: the background check is removed
+msc guard status                                  # on/off, limits and recent activity
+sudo msc guard check --dry-run                    # what it would do right now
+```
+
+(`install` / `remove` still work as aliases for `on` / `off`.) Turning it off only removes the hourly
+check; nothing else changes. Its log is `/Library/Logs/macsmartcleaner-guard.log`.
 
 ### ◧ Space Lens: `msc lens [folder]`
 
@@ -346,6 +358,7 @@ msc scan --report [--html FILE] [--json FILE]  # text/web/JSON report instead
 msc lens [folder] [--list]                  # Space Lens (`/` = whole disk)
 sudo msc diagnose                           # System Data breakdown: volumes, snapshots, indexes, swap
 sudo msc spotlight [--watch 60] [--auto-exclude] [--guard 20GB]   # fix a runaway Spotlight index
+sudo msc guard on|off|status|check          # Auto-Protect: hourly Spotlight/free-space fix
 msc uninstall [--list] [APP…] [--dry-run]   # remove apps with their leftovers
 msc startup [--list]                        # startup items
 msc optimize [--list] [--run IDS]           # maintenance tasks

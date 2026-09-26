@@ -4,7 +4,11 @@
 
 - **Auto-Protect** (`msc guard`, menu): hourly LaunchDaemon that rebuilds the Spotlight index above a
   limit and, when free space drops below a floor, deletes Time Machine local snapshots and runs the safe
-  cleanup (skipping open apps); adjustable limits and an activity log in the menu
+  cleanup (skipping open apps); adjustable limits and an activity log in the menu. An always-visible
+  ON / OFF switch in the menu (enter = on, x = off, space = flip), an ON/off badge on the main menu, and
+  `msc guard on` / `msc guard off`
+- Fix: screens opened from the menu (Auto-Protect, Startup, Optimize, Space Lens, Uninstaller, Deep Scan)
+  inherited the menu's animation timeout, so their messages vanished at once and they redrew non-stop
 - **Startup animation**: block-letter logo drawn by a glowing scan beam with sparkles, typed tagline and a
   warm-up bar (any key skips, `MSC_NO_INTRO=1` turns it off); flowing colour wave on the menu logo
 

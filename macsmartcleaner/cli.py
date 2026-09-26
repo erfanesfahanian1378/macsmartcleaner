@@ -588,6 +588,7 @@ def cmd_diagnose(args, ctx: Context) -> int:
 
 def cmd_guard(args, ctx: Context) -> int:
     from . import guard
+    args.action = {"on": "install", "off": "remove"}.get(args.action, args.action)
     if args.action == "check":
         gctx = guard.context_for(args.user) if args.user else ctx
         for line in guard.check(gctx, parse_size(args.index), parse_size(args.min_free), dry_run=args.dry_run):
@@ -604,6 +605,7 @@ def cmd_guard(args, ctx: Context) -> int:
                  if st["installed"] else ""))
         for line in st["log"]:
             print("  " + line)
+        print("  turn it " + ("off: `sudo msc guard off`" if st["installed"] else "on: `sudo msc guard on`"))
         return 0
     print(("✔ " if ok else "✖ ") + msg)
     return 0 if ok else 1
@@ -683,7 +685,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_spotlight)
 
     gd = sub.add_parser("guard", help="Auto-Protect: hourly check that rebuilds Spotlight / frees space")
-    gd.add_argument("action", choices=["install", "remove", "status", "check"])
+    gd.add_argument("action", choices=["on", "off", "install", "remove", "status", "check"],
+                    help="on/install = turn on, off/remove = turn off, status, check = run one pass now")
     gd.add_argument("--index", default="20GB", help="rebuild Spotlight above this index size (default 20GB)")
     gd.add_argument("--min-free", default="50GB", help="free up space below this much free (default 50GB)")
     gd.add_argument("--user", help=argparse.SUPPRESS)

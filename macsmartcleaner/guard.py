@@ -47,7 +47,7 @@ def _launchctl(ctx: Context, *args: str) -> None:
 
 def install(ctx: Context, index_max: int, min_free: int, user: Optional[str] = None) -> Tuple[bool, str]:
     if not ctx.is_root:
-        return False, "Auto-Protect needs admin rights: run `sudo msc guard install`"
+        return False, "Auto-Protect needs admin rights: run `sudo msc guard on`"
     user = user or ctx.sudo_user or pwd.getpwuid(ctx.uid).pw_name
     for old in (ctx.path(f"/Library/LaunchDaemons/{OLD_LABEL}.plist"), ctx.path(PLIST)):
         if os.path.exists(old):
@@ -69,7 +69,7 @@ def remove(ctx: Context) -> Tuple[bool, str]:
     if not present:
         return True, "Auto-Protect is not installed"
     if not ctx.is_root:
-        return False, "turning Auto-Protect off needs admin rights: run `sudo msc guard remove`"
+        return False, "turning Auto-Protect off needs admin rights: run `sudo msc guard off`"
     for p in present:
         _launchctl(ctx, "bootout", "system", p)
         os.remove(p)

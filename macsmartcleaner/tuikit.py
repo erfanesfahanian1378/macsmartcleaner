@@ -23,6 +23,9 @@ class Canvas:
     heat: List[int]
 
     def init_colors(self) -> None:
+        # curses hands every screen the same window: undo the menu's animation timeout, so
+        # getch() waits for a key (else messages are cleared at once by the -1 "no key" reads)
+        self.scr.timeout(-1)
         curses.start_color()
         try:
             curses.use_default_colors()

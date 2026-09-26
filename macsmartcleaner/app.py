@@ -15,7 +15,7 @@ from typing import Callable, List, Optional, Sequence, Tuple
 from . import apptools, optimize, startup, sysinfo, ui
 from .context import Context
 from .sizes import human
-from .tuikit import (CYAN, GREEN, GREY, INVERT, MAGENTA, RED, YELLOW, Canvas, pct, wrap)
+from .tuikit import (CYAN, GREEN, GREY, INVERT, MAGENTA, RED, WHITE, YELLOW, Canvas, pct, wrap)
 
 BIG_LOGO = [
     "███╗   ███╗███████╗ ██████╗",
@@ -40,7 +40,7 @@ MENU = [
     ("lens", "◧", "Space Lens", "Browse any folder by size, drill down, trash"),
     ("uninstall", "⌫", "Uninstaller", "Remove apps with all their leftovers"),
     ("doctor", "✚", "Data Doctor", "Where System Data hides; Spotlight fixes"),
-    ("guard", "⛨", "Auto-Protect", "Hourly auto-fix: Spotlight & low disk space"),
+    ("guard", "⛨", "Auto-Protect", "Auto-fix Spotlight & low disk, hourly"),
     ("startup", "↑", "Startup Items", "Apps & helpers that launch automatically"),
     ("optimize", "⚙", "Optimize", "DNS, memory, Finder/Dock, Spotlight & more"),
     ("status", "◔", "System Status", "Live CPU, GPU, memory, disk, network"),
@@ -57,6 +57,7 @@ class Menu(Canvas):
         self.cur = 0
         self.frame = 0
         self.intro_done = bool(os.environ.get("MSC_NO_INTRO"))
+        self.guard_on = False
 
     # ---- startup splash ------------------------------------------------------
     def intro(self) -> None:
@@ -122,8 +123,13 @@ class Menu(Canvas):
         y = top + 5
         box_w = min(72, w - 4)
         x0 = (w - box_w) // 2
-        for i, (_key, icon, name, desc) in enumerate(MENU):
+        for i, (key, icon, name, desc) in enumerate(MENU):
             sel = i == self.cur
+            if key == "guard":
+                badge, bcol = ("● ON", GREEN) if self.guard_on else ("○ off", GREY)
+                self.put(y, x0 + box_w - 10, badge, (curses.color_pair(INVERT) if sel else curses.color_pair(bcol))
+                         | curses.A_BOLD)
+                desc = desc[: box_w - 34]
             if sel:
                 pulse = "▶" if self.frame % 10 < 7 else "▷"
                 self.put(y, x0, " " * box_w, curses.color_pair(INVERT))
@@ -163,6 +169,8 @@ class Menu(Canvas):
         self.init_colors()
         scr.keypad(True)
         scr.timeout(90)
+        from . import guard
+        self.guard_on = guard.status(self.ctx)["installed"]
         if not self.intro_done:
             self.intro()
         while True:
@@ -560,8 +568,15 @@ class GuardScreen(Canvas):
         s.erase()
         h, w = self.size()
         self.title(0, 1, "⛨ Auto-Protect", 0)
-        state = ("● ON", GREEN) if self.installed else ("○ off", GREY)
-        self.put(0, w - len(state[0]) - 2, state[0], curses.color_pair(state[1]) | curses.A_BOLD)
+        # the switch: both sides always shown, the active one lit
+        self.put(2, 2, "Auto-Protect is", curses.A_BOLD)
+        on_attr = (curses.color_pair(GREEN) | curses.A_REVERSE | curses.A_BOLD) if self.installed else curses.color_pair(GREY)
+        off_attr = (curses.color_pair(WHITE) | curses.A_REVERSE | curses.A_BOLD) if not self.installed else curses.color_pair(GREY)
+        self.put(2, 19, "  ● ON  ", on_attr)
+        self.put(2, 28, "  ○ OFF  ", off_attr)
+        hint = ("press x (or space) to turn it OFF" if self.installed
+                else "press enter (or space) to turn it ON")
+        self.put(2, 40, hint[: max(0, w - 42)], curses.color_pair(YELLOW))
         lines = [
             "Every hour, in the background (even when msc is closed):",
             "",
@@ -573,19 +588,17 @@ class GuardScreen(Canvas):
             "     then cleans caches & logs, skipping apps you have open",
         ]
         for i, line in enumerate(lines):
-            self.put(2 + i, 2, line, curses.A_BOLD if i in (2, 5) else curses.color_pair(GREY) if i else 0)
-        y = 2 + len(lines) + 1
+            self.put(4 + i, 2, line, curses.A_BOLD if i in (2, 5) else curses.color_pair(GREY) if i else 0)
+        y = 4 + len(lines) + 1
         self.hline(y)
         self.put(y + 1, 2, "Recent activity", curses.A_BOLD)
         log = self.log or ["(nothing yet)" if self.installed else "(turn it on to start)"]
         for i, line in enumerate(log[-(h - y - 5):]):
             color = YELLOW if ("rebuild" in line or "freeing" in line or "erased" in line) else GREY
             self.put(y + 2 + i, 4, line[: w - 6], curses.color_pair(color))
-        keys = [("enter", "turn on / update" if self.installed else "turn on"), ("[ ]", "Spotlight limit"),
-                ("- +", "free-space floor"), ("c", "check now")]
-        if self.installed:
-            keys.append(("x", "turn off"))
-        keys.append(("q", "back"))
+        keys = [("enter", "save limits" if self.installed else "turn ON"),
+                ("x", "turn OFF"), ("q", "back"), ("[ ]", "Spotlight limit"), ("- +", "free-space limit"),
+                ("c", "check now")]
         self.footer(keys, self.flash)
         s.refresh()
 
@@ -610,9 +623,15 @@ class GuardScreen(Canvas):
                 self.free_gb = _step(FREE_STEPS, self.free_gb, 1)
             elif k in (10, 13, curses.KEY_ENTER, ord("i")):
                 return ("install", self.index_gb, self.free_gb)
-            elif k == ord("x") and self.installed:
-                if self.dialog(["Turn Auto-Protect off?", "", "The hourly check stops. Nothing else changes."],
-                               yes="Turn off"):
+            elif k in (ord("x"), ord("X"), ord("o"), ord(" "), curses.KEY_DC, curses.KEY_BACKSPACE, 127):
+                if not self.installed:
+                    if k == ord(" "):
+                        return ("install", self.index_gb, self.free_gb)
+                    self.flash = "Auto-Protect is already off"
+                elif self.dialog(["Turn Auto-Protect OFF?", "",
+                                  "The hourly background check stops and is removed.",
+                                  "Nothing else changes; you can turn it on again any time."],
+                                 yes="Turn off"):
                     return ("remove", 0, 0)
             elif k == ord("c"):
                 return ("check", self.index_gb, self.free_gb)

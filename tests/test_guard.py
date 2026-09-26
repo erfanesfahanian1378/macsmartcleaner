@@ -34,6 +34,23 @@ class TestGuard(FakeMac):
         self.assertTrue(guard.remove(self.ctx)[0])
         self.assertFalse(guard.status(self.ctx)["installed"])
 
+    def test_cli_on_and_off(self):
+        import contextlib
+        import io
+        from macsmartcleaner.cli import main
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), unittest.mock.patch("pwd.getpwuid") as gp:
+            gp.return_value.pw_name = "me"
+            self.assertEqual(main(["guard", "on", "--index", "10GB"], ctx=self.ctx), 0)
+            self.assertTrue(guard.status(self.ctx)["installed"])
+            self.assertEqual(guard.status(self.ctx)["index_max"], 10_000_000_000)
+            main(["guard", "status"], ctx=self.ctx)
+            self.assertEqual(main(["guard", "off"], ctx=self.ctx), 0)
+        self.assertFalse(guard.status(self.ctx)["installed"])
+        self.assertIn("sudo msc guard off", out.getvalue())
+        self.assertIn("Auto-Protect turned off", out.getvalue())
+        self.assertTrue(any(c[:2] == ["launchctl", "bootout"] for c in self.runner.calls))
+
     def test_install_needs_root(self):
         self.ctx.is_root = False
         self.assertFalse(guard.install(self.ctx, 1, 1, user="me")[0])
