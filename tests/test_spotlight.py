@@ -12,6 +12,8 @@ FS_USAGE = """\
 12:00:01.000003  open              F=6        (R_____)  /System/Volumes/Data/Users/me/Library/CloudStorage/OneDrive-Uni/x.xlsx  0.000100   mds_stores.88
 12:00:01.000004  write             F=7    B=0x1000      /System/Volumes/Data/.Spotlight-V100/Store-V2/ABC/journalAttr.4        0.000050   mds_stores.88
 12:00:01.000005  open              F=8        (R_____)  /Users/me/Projects/web/node_modules/react/index.js                 0.000030   mdworker_shared.902
+12:00:01.000006  open              F=9        (R_____)  /System/Library/Frameworks/CoreServices.framework/Versions/A/x   0.000030   mdworker_shared.902
+12:00:01.000007  RdData[A]         D=0x0001  B=0x1000   /dev/disk2s5                                                        0.000030   mds_stores.88
 """
 
 
@@ -21,8 +23,9 @@ class TestSpotlight(FakeMac):
 
     def test_parse_and_group_fs_usage(self):
         paths = spotlight.parse_fs_usage(FS_USAGE)
-        self.assertEqual(len(paths), 5)
+        self.assertEqual(len(paths), 7)
         top = spotlight.group_paths(paths, "/Users/me")
+        self.assertEqual(len(top), 2)  # framework loads and raw disk reads are noise
         self.assertEqual(top[0], ("~/Library/CloudStorage/OneDrive-Uni", 3))  # its own index writes don't count
         self.assertEqual(dict(top)["~/Projects/web/node_modules"], 1)
 

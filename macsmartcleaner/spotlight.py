@@ -155,6 +155,11 @@ def parse_fs_usage(text: str) -> List[str]:
     return paths
 
 
+# Spotlight's own machinery (loading frameworks, importers, devices, temp files): not a cause
+_NOISE = ("/dev/", "/System/", "/usr/", "/bin/", "/sbin/", "/Library/Spotlight/", "/private/var/db/",
+          "/private/var/folders/", "/var/folders/", "/private/var/run/", "/Library/Apple/", "/cores/")
+
+
 def group_paths(paths: Sequence[str], home: str, depth: int = 3) -> List[Tuple[str, int]]:
     """Count accesses per folder, a few levels deep, so the culprit folder stands out."""
     counts: Counter = Counter()
@@ -163,6 +168,8 @@ def group_paths(paths: Sequence[str], home: str, depth: int = 3) -> List[Tuple[s
             p = p[len("/System/Volumes/Data"):]
         if p.startswith(STORE) or "/.Spotlight-V100" in p:
             continue  # Spotlight writing its own index is not the cause
+        if p.startswith(_NOISE) or p.count("/") < 3 or p in (home, "/Users", "/var", "/private"):
+            continue
         base = home if p.startswith(home + "/") else ""
         rel = p[len(base):].strip("/").split("/")
         key = (("~/" if base else "/") + "/".join(rel[: depth if base else depth + 1]))
