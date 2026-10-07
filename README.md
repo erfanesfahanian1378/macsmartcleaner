@@ -45,11 +45,14 @@ no dependencies. Nothing leaves your Mac.
 Requires macOS 11 or newer. Paste this into **Terminal** (Applications > Utilities > Terminal):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/erfanesfahanian1378/macsmartcleaner/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/erfanesfahanian1378/macsmartcleaner/HEAD/install.sh | sh
 ```
 
-If your Mac asks to install the **Command Line Tools**, click Install and run the command again.
-They provide the Python that `msc` runs on.
+Then open a **new** Terminal window (or run the `export PATH=...` line it prints) and type `msc`.
+
+It installs into `~/.macsmartcleaner`, links `msc` into `~/.local/bin`, and adds that folder to your
+PATH in `~/.zshrc` (or `~/.bash_profile`). No admin password needed. If your Mac asks to install the
+**Command Line Tools**, click Install and run the command again: they provide the Python that `msc` runs on.
 
 <details>
 <summary>Other ways to install</summary>
@@ -60,8 +63,13 @@ pipx install git+https://github.com/erfanesfahanian1378/macsmartcleaner
 # or run straight from a clone, no install
 git clone https://github.com/erfanesfahanian1378/macsmartcleaner && cd macsmartcleaner && ./msc scan
 ```
-To update, run the installer again. To uninstall: `curl -fsSL https://raw.githubusercontent.com/erfanesfahanian1378/macsmartcleaner/main/install.sh | sh -s -- --uninstall`
 </details>
+
+**Update:** run the install command again. **Uninstall** (also removes the PATH line):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/erfanesfahanian1378/macsmartcleaner/HEAD/install.sh | sh -s -- --uninstall
+```
 
 ### Give Terminal "Full Disk Access" (important)
 

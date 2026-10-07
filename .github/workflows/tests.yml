@@ -15,6 +15,22 @@ jobs:
       - run: python -m unittest discover -s tests -t . -v
       - name: check shell scripts
         run: sh -n install.sh && sh -n msc
+      - name: install links in the README resolve
+        run: |
+          for url in $(grep -oE 'https://raw\.githubusercontent\.com/[^ `]+' README.md install.sh | cut -d: -f2- | sort -u); do
+            echo "checking $url"; curl -fsSIL "$url" >/dev/null || { echo "broken link: $url"; exit 1; }
+          done
+      - name: public one-line install, as a new user would (macOS)
+        if: runner.os == 'macOS'
+        env:
+          REF: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          H="$(mktemp -d)"
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$REF/install.sh" | HOME="$H" SHELL=/bin/zsh MSC_REF="$REF" sh
+          HOME="$H" zsh -ic 'command -v msc && msc --version && msc guard status'
+          curl -fsSL "https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$REF/install.sh" | HOME="$H" sh -s -- --uninstall
+          if grep -q macsmartcleaner "$H/.zshrc"; then echo "PATH line left behind"; exit 1; fi
+          test ! -e "$H/.local/bin/msc"
       - name: smoke test real scan
         run: |
           ./msc scan --report --no-discover --no-projects

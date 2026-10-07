@@ -26,7 +26,7 @@ classifiers = [
 [project.urls]
 Homepage = "https://github.com/erfanesfahanian1378/macsmartcleaner"
 Issues = "https://github.com/erfanesfahanian1378/macsmartcleaner/issues"
-Changelog = "https://github.com/erfanesfahanian1378/macsmartcleaner/blob/main/CHANGELOG.md"
+Changelog = "https://github.com/erfanesfahanian1378/macsmartcleaner/blob/HEAD/CHANGELOG.md"
 
 [project.scripts]
 msc = "macsmartcleaner.cli:main"

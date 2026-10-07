@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- **Fix: the one-line installer didn't work.** The README and installer pointed at a `main` branch the
+  repository doesn't have (its default is `master`), so the `curl` command got a 404. They now use `HEAD`
+  (whatever the default branch is). The installer also adds `~/.local/bin` to your PATH, so `msc` works
+  in a new Terminal window, and uninstall removes it again. CI runs the public `curl | sh` install on a
+  real Mac and checks every install link in the README
 - **Auto-Protect** (`msc guard`, menu): hourly LaunchDaemon that rebuilds the Spotlight index above a
   limit and, when free space drops below a floor, deletes Time Machine local snapshots and runs the safe
   cleanup (skipping open apps); adjustable limits and an activity log in the menu. An always-visible
